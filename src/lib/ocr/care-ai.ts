@@ -162,13 +162,23 @@ function remapLabResult(
   return remapped;
 }
 
-export function buildLabFieldSpecs(definitions: LabDefinitionLike[]): {
+/**
+ * `ocrContext` (e.g. a font/handwriting hint) is attached to only the FIRST
+ * confidence field's description, not repeated on every field — the whole
+ * schema is sent to the model in a single call, so one occurrence is visible
+ * alongside every other field's description anyway.
+ */
+export function buildLabFieldSpecs(
+  definitions: LabDefinitionLike[],
+  ocrContext?: string,
+): {
   specs: MedispeakFieldSpec[];
   keyMap: LabFieldKeyMap;
 } {
   const specs: MedispeakFieldSpec[] = [];
   const keyMap: LabFieldKeyMap = {};
   const aliases = definitionAliases(definitions);
+  let contextAttached = false;
 
   const addPair = (
     alias: string,
@@ -186,12 +196,18 @@ export function buildLabFieldSpecs(definitions: LabDefinitionLike[]): {
       type: "string",
       description,
     });
+    const confidenceDescription = [
+      "How sure you are of this extracted value, from 0 (illegible or guessed) to 1 (clearly readable). Always set when the value is filled.",
+      !contextAttached ? ocrContext : undefined,
+    ]
+      .filter(Boolean)
+      .join(" ");
+    if (ocrContext && !contextAttached) contextAttached = true;
     specs.push({
       key: `${valueKey}c`,
       label: `${labelBase} value confidence`,
       type: "number",
-      description:
-        "How sure you are of this extracted value, from 0 (illegible or guessed) to 1 (clearly readable). Always set when the value is filled.",
+      description: confidenceDescription,
     });
     specs.push({
       key: unitKey,
@@ -234,17 +250,11 @@ export async function extractLabResults(
   definitions: LabDefinitionLike[],
   facilityId?: string | null,
 ): Promise<Record<string, unknown>> {
-  const { specs, keyMap } = buildLabFieldSpecs(definitions);
-
-  const fontContext = readOcrContext();
-  const context = fontContext
-    ? Object.fromEntries(specs.map((s) => [s.key, fontContext]))
-    : undefined;
+  const { specs, keyMap } = buildLabFieldSpecs(definitions, readOcrContext());
 
   const result = await runMedispeakOcr(files, {
     facilityId,
     fields: specs,
-    context,
   });
   return remapLabResult(result, keyMap);
 }
