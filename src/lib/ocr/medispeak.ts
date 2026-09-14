@@ -31,6 +31,7 @@ export interface MedispeakFieldSpec {
 interface CreateParams {
   facilityId?: string | null;
   fields: MedispeakFieldSpec[];
+  context?: Record<string, string>;
 }
 
 class MedispeakAuthError extends Error {}
@@ -102,6 +103,7 @@ export async function createMedispeakDocumentSession(
       facility_id: params.facilityId,
       modality: "document",
       fields: params.fields,
+      context: params.context,
     }),
   });
   if (!response.ok) return parseError(response);

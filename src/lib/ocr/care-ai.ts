@@ -1,3 +1,5 @@
+import { readOcrContext } from "@/lib/plugin-config";
+
 import { MedispeakFieldSpec, runMedispeakOcr } from "./medispeak";
 import { ExtractedData } from "./types";
 
@@ -233,9 +235,16 @@ export async function extractLabResults(
   facilityId?: string | null,
 ): Promise<Record<string, unknown>> {
   const { specs, keyMap } = buildLabFieldSpecs(definitions);
+
+  const fontContext = readOcrContext();
+  const context = fontContext
+    ? Object.fromEntries(specs.map((s) => [s.key, fontContext]))
+    : undefined;
+
   const result = await runMedispeakOcr(files, {
     facilityId,
     fields: specs,
+    context,
   });
   return remapLabResult(result, keyMap);
 }

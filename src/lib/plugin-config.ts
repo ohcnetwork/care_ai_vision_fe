@@ -14,7 +14,8 @@
  *     "name": "care_ai_vision_fe",
  *     "config": {
  *       "MEDISPEAK_API_URL": "https://api.medispeak.example/api/v2",
- *       "LOW_CONFIDENCE_THRESHOLD": "0.99"
+ *       "LOW_CONFIDENCE_THRESHOLD": "0.99",
+ *       "OCR_CONTEXT": "Printed in a dot-matrix font; 0/O and 1/I/l are often ambiguous"
  *     }
  *   }
  *
@@ -106,5 +107,22 @@ export function readLowConfidenceThreshold(): number {
       (import.meta.env.REACT_LOW_CONFIDENCE_THRESHOLD || "").toString(),
     ) ??
     DEFAULT_LOW_CONFIDENCE_THRESHOLD
+  );
+}
+
+/**
+ * Free-text hint describing the lab report's font/handwriting (e.g. "printed
+ * in a cursive font, digits may look like letters"), sent to the OCR model
+ * as per-field context so it reads ambiguous characters correctly. Resolved
+ * at call time:
+ *
+ *   1. `OCR_CONTEXT` in this plugin's CARE config
+ *   2. `REACT_OCR_CONTEXT` at build time (local `.env`)
+ */
+export function readOcrContext(): string {
+  return (
+    readPluginConfig("OCR_CONTEXT") ??
+    readPluginConfig("REACT_OCR_CONTEXT") ??
+    (import.meta.env.REACT_OCR_CONTEXT || "").toString().trim()
   );
 }
