@@ -1,5 +1,22 @@
-import { MedispeakFieldSpec, runMedispeakOcr } from "./medispeak";
+import { fetchAiVisionModelPreference } from "@/state/ai-vision-store";
+import { MedispeakFieldSpec } from "./medispeak";
+import { runOpenAiVisionOcr } from "./openai";
 import { ExtractedData } from "./types";
+
+/**
+ * TEST BRANCH (test/openai-direct-vision): OCR here goes straight to OpenAI
+ * (see ./openai.ts) instead of Medispeak — one direct call, no
+ * session/upload/commit/poll pipeline. See ./openai.ts for the security
+ * caveat around holding the API key client-side.
+ */
+async function runVisionOcr(
+  files: File | File[],
+  params: { facilityId?: string | null; fields: MedispeakFieldSpec[] },
+  options?: { onTranscript?: (text: string) => void },
+): Promise<Record<string, unknown>> {
+  const model = await fetchAiVisionModelPreference();
+  return runOpenAiVisionOcr(files, params, { ...options, model });
+}
 
 const REGISTRATION_FORM_FIELDS: MedispeakFieldSpec[] = [
   { key: "name", label: "Patient full name", type: "string" },
@@ -58,7 +75,7 @@ export async function extractDataFromImage(
   facilityId?: string | null,
   onTranscript?: (text: string) => void,
 ): Promise<ExtractedData> {
-  const result = await runMedispeakOcr(
+  const result = await runVisionOcr(
     imageFile,
     { facilityId, fields: REGISTRATION_FORM_FIELDS },
     { onTranscript },
@@ -233,7 +250,7 @@ export async function extractLabResults(
   facilityId?: string | null,
 ): Promise<Record<string, unknown>> {
   const { specs, keyMap } = buildLabFieldSpecs(definitions);
-  const result = await runMedispeakOcr(files, {
+  const result = await runVisionOcr(files, {
     facilityId,
     fields: specs,
   });

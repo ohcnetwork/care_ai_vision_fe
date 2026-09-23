@@ -6,10 +6,19 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useAiVisionEnabled } from "@/hooks/useAiVisionEnabled";
+import { useAiVisionModel } from "@/hooks/useAiVisionModel";
 import { useHasFacilityPermission } from "@/hooks/useFacilityPermission";
 import { useTranslation } from "@/hooks/useTranslation";
+import { OPENAI_VISION_MODELS } from "@/state/ai-vision-store";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
 
 export default function AIVisionSettings() {
@@ -17,6 +26,7 @@ export default function AIVisionSettings() {
   const { hasPermission, isLoading: isPermissionLoading } =
     useHasFacilityPermission("can_use_filly");
   const { enabled, setEnabled } = useAiVisionEnabled();
+  const { model, setModel } = useAiVisionModel();
 
   return (
     <div className="care-ai-vision-container mx-auto max-w-3xl py-8 px-4">
@@ -64,6 +74,30 @@ export default function AIVisionSettings() {
             </div>
             <Switch checked={enabled} onCheckedChange={setEnabled} />
           </CardContent>
+          {enabled && (
+            <CardContent className="flex items-center justify-between border-t pt-4">
+              <div>
+                <div className="text-sm font-medium">
+                  {t("ai_vision_model_label")}
+                </div>
+                <div className="text-sm text-muted-foreground">
+                  {t("ai_vision_model_description")}
+                </div>
+              </div>
+              <Select value={model} onValueChange={setModel}>
+                <SelectTrigger className="w-48">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {OPENAI_VISION_MODELS.map((m) => (
+                    <SelectItem key={m.value} value={m.value}>
+                      {m.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </CardContent>
+          )}
         </Card>
       )}
     </div>

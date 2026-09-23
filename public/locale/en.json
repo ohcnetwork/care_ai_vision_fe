@@ -50,5 +50,7 @@
   "upload_image_error": "Please upload an image or PDF file",
   "values_filled_from_pages_one": "{{count}} value filled from {{pages}} docs",
   "values_filled_from_pages_other": "{{count}} values filled from {{pages}} docs",
-  "verifying_details": "Verifying details"
+  "verifying_details": "Verifying details",
+  "ai_vision_model_label": "OpenAI model",
+  "ai_vision_model_description": "Model used for direct OpenAI vision extraction (test build)."
 }
