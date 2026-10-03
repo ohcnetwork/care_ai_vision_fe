@@ -4,21 +4,20 @@
   "description": "AI-powered patient registration for CARE. Scan or photograph a registration form and AI Vision extracts the patient's details and fills them into CARE, reducing manual data entry at the front desk.",
   "publisher": "ohcnetwork",
   "license": "MIT",
+  "icon": "https://care-3-1.care-ai-vision.pages.dev/assets/icon.svg",
   "categories": [
     "ai",
     "productivity",
     "ocr"
   ],
-
   "frontend": {
-    "url": "https://font-fix.care-ai-vision.pages.dev/assets/remoteEntry.js",
+    "url": "https://care-3-1.care-ai-vision.pages.dev/assets/remoteEntry.js",
     "name": "care_ai_vision_fe",
-
     "config": {
       "MEDISPEAK_API_URL": "https://medispeak.ohc.network/api/v2"
     }
   },
-    "backend": {
+  "backend": {
     "healthCheck": "/api/care_filly/healthz"
   }
 }
