@@ -47,6 +47,63 @@
   position: relative;
 }
 
+@keyframes invoice-ocr-row-pulse {
+  0%, 100% { background-color: color-mix(in srgb, var(--color-primary-50, #f0fdf4) 50%, white); }
+  50% { background-color: var(--color-primary-50, #f0fdf4); }
+}
+
+.invoice-ocr-filled > td:not(.invoice-ocr-attention) {
+  animation: invoice-ocr-row-pulse 0.6s ease-in-out 3;
+}
+
+tr.invoice-ocr-active {
+  position: relative;
+}
+
+tr.invoice-ocr-active::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border: 2px solid #10b981;
+  border-radius: 8px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.invoice-ocr-active > td:not(.invoice-ocr-attention) {
+  background-color: var(--color-primary-50, #f0fdf4);
+}
+
+td.invoice-ocr-attention {
+  position: relative;
+}
+
+td.invoice-ocr-attention::after {
+  content: "";
+  position: absolute;
+  top: var(--invoice-attention-top, 4px);
+  left: var(--invoice-attention-left, 4px);
+  width: var(--invoice-attention-width, calc(100% - 8px));
+  height: var(--invoice-attention-height, 40px);
+  box-sizing: border-box;
+  border: 2px solid #f59e0b;
+  border-radius: 8px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.invoice-ocr-attention input,
+.invoice-ocr-attention [role="combobox"] {
+  background-color: #fff7ed !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .invoice-ocr-filled > td:not(.invoice-ocr-attention) {
+    animation: none;
+    background-color: var(--color-primary-50, #f0fdf4);
+  }
+}
+
 input.ocr-autofilled,
 .ocr-autofilled[role="combobox"] {
   background-color: #ecfdf5 !important;
