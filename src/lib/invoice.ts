@@ -175,10 +175,7 @@ export async function resolveInvoiceRows(
     selections.push({
       row,
       matches,
-      product:
-        exact || !matches.length
-          ? Promise.resolve(exact)
-          : selectProduct(row, matches),
+      product: exact ? Promise.resolve(exact) : selectProduct(row, matches),
       searchFailed,
     });
   }
@@ -279,7 +276,7 @@ export async function resolveInvoiceRows(
 }
 
 const INVOICE_ROW_EXTRACTION_RULES =
-  "Extract only goods rows from the current invoice line-item tables. Ignore pending-bill ledgers, previous invoices, balance summaries, tax summaries, headers and subtotals. Include separate rows or batches even when descriptions match, in document order across all unique invoice pages. Capture each row's HSN/SAC exactly when readable; never substitute a GST rate or another row's code. Preserve medicine brand, strength and dosage form in description. quantity excludes free_quantity. Read pack_size from the Pack column as the numeric count of base units per billed pack; normalize count notation such as 10's to 10. Return null for volume/strength labels such as 2.5 ML unless a count of base units is explicitly printed. Preserve expiry as printed, including month/year. mrp and purchase_rate are per billed unit, not row totals. total_purchase_price is the final amount for that goods row. selling_price is only an explicitly labelled hospital resale price per base unit, never supplier Rate/SP. Tax fields are percentages, not rupee amounts. gst_rate is combined GST only when explicitly printed; do not invent CGST/SGST splits. discount_percent is a row discount percentage, not a rupee amount. Use strings or null for item values.";
+  "Extract only goods rows from the current invoice line-item tables. Ignore pending-bill ledgers, previous invoices, balance summaries, tax summaries, headers and subtotals. Include separate rows or batches even when descriptions match, in document order across all unique invoice pages. Capture each row's HSN/SAC exactly when readable; never substitute a GST rate or another row's code. Preserve medicine brand, strength and dosage form in description. quantity is the paid/billed pack count only. free_quantity is the count of extra free, bonus or scheme packs, in packs; do not treat it as a percentage or discount. The received pack count is quantity plus free_quantity. Read free_quantity from the Free, Bonus or Scheme quantity column when it contains a count. discount_percent must come only from a value explicitly printed in a Discount, Disc % or Discount % column; never infer it from Free, Bonus or Scheme quantity. If no explicit discount percentage is printed, return null. Read pack_size from the Pack column as the numeric count of base units per billed pack; normalize count notation such as 10's to 10. Return null for volume/strength labels such as 2.5 ML unless a count of base units is explicitly printed. Preserve expiry as printed, including month/year. mrp and purchase_rate are per billed unit, not row totals. total_purchase_price is the final amount for that goods row. selling_price is only an explicitly labelled hospital resale price per base unit, never supplier Rate/SP. Tax fields are percentages, not rupee amounts. gst_rate is combined GST only when explicitly printed; do not invent CGST/SGST splits. discount_percent is a percentage, not a rupee amount. Use strings or null for item values.";
 
 export function buildInvoiceFields(): MedispeakFieldSpec[] {
   return [
@@ -845,6 +842,7 @@ function normalized(value: string): string {
     .toLowerCase()
     .replace(/(\d+(?:\.\d+)?)\s*gms?\b/g, "$1g")
     .replace(/(\d)\s+(mg|mcg|g|iu|ml)\b/g, "$1$2")
+    .replace(/(?<!\d)\.|\.(?!\d)/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -852,12 +850,8 @@ function normalized(value: string): string {
 export function scoreInvoiceProduct(
   product: InvoiceProduct,
   description: string,
-  hsnSac = "",
+  _hsnSac = "",
 ): number {
-  const invoiceCode = hsnSac.replace(/\D/g, "");
-  const productCode = (product.alternate_identifier ?? "").replace(/\D/g, "");
-  const identifierScore =
-    invoiceCode && productCode && invoiceCode === productCode ? 75 : 0;
   const names = [
     product.name,
     ...(product.names?.map((name) => name.name) ?? []),
@@ -866,10 +860,10 @@ export function scoreInvoiceProduct(
     .filter(Boolean)
     .map(normalized);
   const query = normalized(description);
-  const strengths = query.match(/\d+(?:\.\d+)?(?:mg|mcg|g|iu|ml)?/g) ?? [];
+  const strengths = query.match(/\d+(?:\.\d+)?(?:kg|mg|mcg|g|iu|ml)?/g) ?? [];
   const queries = buildProductQueries(description).map(normalized);
   const queryTokens =
-    query.match(/[a-z]+|\d+(?:\.\d+)?(?:mg|mcg|g|iu|ml)?/g) ?? [];
+    query.match(/[a-z]+|\d+(?:\.\d+)?(?:kg|mg|mcg|g|iu|ml)?/g) ?? [];
   const genericWords = new Set([
     "inj",
     "injection",
@@ -888,6 +882,7 @@ export function scoreInvoiceProduct(
     "suspension",
     "drops",
     "ml",
+    "kg",
     "mg",
     "mcg",
     "g",
@@ -905,7 +900,7 @@ export function scoreInvoiceProduct(
       !strengths.every((strength) => {
         const amount = strength.match(/^\d+(?:\.\d+)?/)![0];
         const unit = strength.slice(amount.length);
-        const unitPattern = unit ? `(?:${unit})?` : "(?:mg|mcg|g|iu|ml)?";
+        const unitPattern = unit ? `(?:${unit})?` : "(?:kg|mg|mcg|g|iu|ml)?";
         const pattern = new RegExp(
           `(?:^|[^\\d.])${amount.replace(/\./g, "\\.")}${unitPattern}(?![\\d.a-z])`,
         );
@@ -934,7 +929,7 @@ export function scoreInvoiceProduct(
       }
     }
     const nameTokens: string[] =
-      name.match(/[a-z]+|\d+(?:\.\d+)?(?:mg|mcg|g|iu|ml)?/g) ?? [];
+      name.match(/[a-z]+|\d+(?:\.\d+)?(?:kg|mg|mcg|g|iu|ml)?/g) ?? [];
     const sharedTokens = queryTokens.filter((token) =>
       nameTokens.includes(token),
     );
@@ -958,12 +953,9 @@ export function scoreInvoiceProduct(
   const best = bestDoseAware > 0 ? bestDoseAware : bestGeneric;
   return Math.max(
     0,
-    Math.max(
-      names.some((name) => name.includes("containing product"))
-        ? best - 25
-        : best,
-      identifierScore,
-    ),
+    names.some((name) => name.includes("containing product"))
+      ? best - 25
+      : best,
   );
 }
 

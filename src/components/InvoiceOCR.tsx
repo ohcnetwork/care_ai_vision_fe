@@ -82,33 +82,44 @@ function isInvoiceFile(file: File): boolean {
   );
 }
 
-function filterInvoiceProducts(
-  products: InvoiceProduct[],
-  search: string,
-): InvoiceProduct[] {
-  const query = search.trim().toLowerCase();
-  if (!query) return products;
-  return products.filter((product) =>
-    [
-      product.name,
-      product.slug,
-      product.alternate_identifier ?? "",
-      ...(product.names?.map((name) => name.name) ?? []),
-    ].some((value) => value.toLowerCase().includes(query)),
-  );
-}
-
-function getInvoiceProductSearchResults(
+function getBestInvoiceProductMatches(
   candidates: InvoiceProduct[],
   catalogProducts: InvoiceProduct[],
-  search: string,
+  description: string,
 ): InvoiceProduct[] {
-  const query = search.trim();
-  const products =
-    query.length >= 2 ? [...catalogProducts, ...candidates] : candidates;
-  return filterInvoiceProducts(
-    [...new Map(products.map((product) => [product.slug, product])).values()],
-    query,
+  return [
+    ...new Map(
+      [...candidates, ...catalogProducts].map((product) => [
+        product.slug,
+        product,
+      ]),
+    ).values(),
+  ]
+    .map((product) => ({
+      product,
+      score: scoreInvoiceProduct(product, description),
+    }))
+    .filter(({ score }) => score >= 40)
+    .sort((first, second) => second.score - first.score)
+    .slice(0, 3)
+    .map(({ product }) => product);
+}
+
+function getInvoiceCatalogSearchResults(
+  catalogProducts: InvoiceProduct[],
+  bestMatches: InvoiceProduct[],
+): InvoiceProduct[] {
+  const bestMatchSlugs = new Set(bestMatches.map((product) => product.slug));
+  return catalogProducts.filter((product) => !bestMatchSlugs.has(product.slug));
+}
+
+function findInvoiceProductBySlug(
+  slug: string,
+  candidates: InvoiceProduct[],
+  catalogProducts: InvoiceProduct[],
+): InvoiceProduct | undefined {
+  return [...candidates, ...catalogProducts].find(
+    (product) => product.slug === slug,
   );
 }
 
@@ -685,188 +696,201 @@ export default function InvoiceOCR({
                   </p>
                 </div>
                 <div className="col-span-2 row-start-2 min-w-0 sm:col-span-1 sm:col-start-2 sm:row-start-1">
-                  {productSelection.candidates.length > 1 ? (
-                    <SelectPrimitive.Root
-                      value=""
-                      disabled={isSubmitting}
-                      onOpenChange={(open) => {
+                  <SelectPrimitive.Root
+                    value=""
+                    disabled={isSubmitting}
+                    onOpenChange={(open) => {
+                      setProductSearch("");
+                      setActiveProductSearchRow(
+                        open ? productSelection.row.row : null,
+                      );
+                      setCatalogProducts([]);
+                      setCatalogSearchError(false);
+                    }}
+                    onValueChange={(slug) => {
+                      const product = findInvoiceProductBySlug(
+                        slug,
+                        productSelection.candidates,
+                        catalogProducts,
+                      );
+                      if (product) {
+                        handleProductSelect(productSelection.row.row, product);
                         setProductSearch("");
-                        setActiveProductSearchRow(
-                          open ? productSelection.row.row : null,
-                        );
-                        setCatalogProducts([]);
-                        setCatalogSearchError(false);
-                      }}
-                      onValueChange={(slug) => {
-                        const product = getInvoiceProductSearchResults(
-                          productSelection.candidates,
-                          catalogProducts,
-                          productSearch,
-                        ).find((candidate) => candidate.slug === slug);
-                        if (product) {
-                          handleProductSelect(
-                            productSelection.row.row,
-                            product,
-                          );
-                          setProductSearch("");
-                          setActiveProductSearchRow(null);
-                        }
-                      }}
-                    >
-                      <SelectPrimitive.Trigger asChild>
-                        <Button
-                          type="button"
-                          variant="white"
-                          size="sm"
-                          autoFocus={index === 0}
-                          className="h-8 w-full min-w-0 justify-between gap-2 text-left"
-                          aria-label={`${t("invoice_select_product", { row: productSelection.row.row })}: ${productSelection.row.description}`}
+                        setActiveProductSearchRow(null);
+                      }
+                    }}
+                  >
+                    <SelectPrimitive.Trigger asChild>
+                      <Button
+                        type="button"
+                        variant="white"
+                        size="sm"
+                        autoFocus={index === 0}
+                        className="h-8 w-full min-w-0 justify-between gap-2 text-left"
+                        aria-label={`${t("invoice_select_product", { row: productSelection.row.row })}: ${productSelection.row.description}`}
+                      >
+                        <SelectPrimitive.Value
+                          className="min-w-0 truncate"
+                          placeholder={t("invoice_select_product", {
+                            row: productSelection.row.row,
+                          })}
+                        />
+                        <SelectPrimitive.Icon asChild>
+                          <ChevronDown className="text-gray-500" />
+                        </SelectPrimitive.Icon>
+                      </Button>
+                    </SelectPrimitive.Trigger>
+                    <SelectPrimitive.Portal>
+                      <div className="care-ai-vision-container">
+                        <SelectPrimitive.Content
+                          position="popper"
+                          sideOffset={4}
+                          className="z-50 max-h-(--radix-select-content-available-height) w-(--radix-select-trigger-width) max-w-[calc(100vw-2rem)] overflow-hidden rounded-md border border-gray-200 bg-white text-gray-900 shadow-md"
                         >
-                          <SelectPrimitive.Value
-                            className="min-w-0 truncate"
-                            placeholder={t("invoice_select_product", {
-                              row: productSelection.row.row,
-                            })}
-                          />
-                          <SelectPrimitive.Icon asChild>
-                            <ChevronDown className="text-gray-500" />
-                          </SelectPrimitive.Icon>
-                        </Button>
-                      </SelectPrimitive.Trigger>
-                      <SelectPrimitive.Portal>
-                        <div className="care-ai-vision-container">
-                          <SelectPrimitive.Content
-                            position="popper"
-                            sideOffset={4}
-                            className="z-50 max-h-(--radix-select-content-available-height) w-(--radix-select-trigger-width) max-w-[calc(100vw-2rem)] overflow-hidden rounded-md border border-gray-200 bg-white text-gray-900 shadow-md"
-                          >
-                            <div className="border-b border-gray-200 p-2">
-                              <div className="flex h-9 items-center gap-2 rounded-md border border-gray-300 px-2">
-                                <Search className="size-4 shrink-0 text-gray-500" />
-                                <input
-                                  type="search"
-                                  autoFocus
-                                  value={productSearch}
-                                  aria-label={t("invoice_search")}
-                                  placeholder={t("invoice_search")}
-                                  className="min-w-0 flex-1 bg-transparent text-base sm:text-sm outline-none placeholder:text-gray-500 border-0 ring-0"
-                                  onChange={(event) =>
-                                    setProductSearch(event.target.value)
+                          <div className="border-b border-gray-200 p-2">
+                            <div className="flex h-9 items-center gap-2 rounded-md border border-gray-300 px-2">
+                              <Search className="size-4 shrink-0 text-gray-500" />
+                              <input
+                                type="search"
+                                autoFocus
+                                value={productSearch}
+                                aria-label={t("invoice_search")}
+                                placeholder={t("invoice_search")}
+                                className="min-w-0 flex-1 bg-transparent text-base sm:text-sm outline-none placeholder:text-gray-500 border-0 ring-0"
+                                onChange={(event) =>
+                                  setProductSearch(event.target.value)
+                                }
+                                onKeyDown={(event) => {
+                                  if (
+                                    event.key.length === 1 &&
+                                    !event.ctrlKey &&
+                                    !event.metaKey &&
+                                    !event.altKey
+                                  ) {
+                                    event.stopPropagation();
                                   }
-                                  onKeyDown={(event) => {
-                                    if (
-                                      event.key.length === 1 &&
-                                      !event.ctrlKey &&
-                                      !event.metaKey &&
-                                      !event.altKey
-                                    ) {
-                                      event.stopPropagation();
-                                    }
-                                  }}
-                                />
-                              </div>
+                                }}
+                              />
                             </div>
-                            <SelectPrimitive.ScrollUpButton className="flex h-6 items-center justify-center">
-                              <ChevronUp className="size-4" />
-                            </SelectPrimitive.ScrollUpButton>
-                            <SelectPrimitive.Viewport className="max-h-64 p-1">
-                              {getInvoiceProductSearchResults(
-                                productSelection.candidates,
-                                catalogProducts,
-                                productSearch,
-                              ).map((product) => (
-                                <SelectPrimitive.Item
-                                  key={product.slug}
-                                  value={product.slug}
-                                  className="min-h-8 cursor-pointer rounded-sm px-2 py-1.5 text-sm outline-none data-highlighted:bg-blue-50 data-highlighted:text-blue-900"
-                                >
-                                  <SelectPrimitive.ItemText>
-                                    <span className="flex items-start justify-between gap-3">
-                                      <span className="min-w-0 wrap-break-word">
-                                        {product.name}
+                          </div>
+                          <SelectPrimitive.ScrollUpButton className="flex h-6 items-center justify-center">
+                            <ChevronUp className="size-4" />
+                          </SelectPrimitive.ScrollUpButton>
+                          <SelectPrimitive.Viewport className="max-h-64 p-1">
+                            {getBestInvoiceProductMatches(
+                              productSelection.candidates,
+                              catalogProducts,
+                              productSelection.row.description,
+                            ).length > 0 && (
+                              <SelectPrimitive.Group>
+                                <SelectPrimitive.Label className="px-2 py-1 text-xs font-semibold text-gray-500">
+                                  {t("invoice_best_matches")}
+                                </SelectPrimitive.Label>
+                                {getBestInvoiceProductMatches(
+                                  productSelection.candidates,
+                                  catalogProducts,
+                                  productSelection.row.description,
+                                ).map((product) => (
+                                  <SelectPrimitive.Item
+                                    key={product.slug}
+                                    value={product.slug}
+                                    className="min-h-8 cursor-pointer rounded-sm px-2 py-1.5 text-sm outline-none data-highlighted:bg-blue-50 data-highlighted:text-blue-900"
+                                  >
+                                    <SelectPrimitive.ItemText>
+                                      <span className="flex items-start justify-between gap-3">
+                                        <span className="min-w-0 wrap-break-word">
+                                          {product.name}
+                                        </span>
+                                        <span className="shrink-0 text-xs text-gray-500">
+                                          {t("invoice_product_match", {
+                                            percent: scoreInvoiceProduct(
+                                              product,
+                                              productSelection.row.description,
+                                              productSelection.row.hsnSac,
+                                            ),
+                                          })}
+                                        </span>
                                       </span>
-                                      <span className="shrink-0 text-xs text-gray-500">
-                                        {t("invoice_product_match", {
-                                          percent: scoreInvoiceProduct(
-                                            product,
-                                            productSelection.row.description,
-                                            productSelection.row.hsnSac,
-                                          ),
-                                        })}
-                                      </span>
-                                    </span>
-                                  </SelectPrimitive.ItemText>
-                                </SelectPrimitive.Item>
-                              ))}
-                              {catalogSearchLoading && (
+                                    </SelectPrimitive.ItemText>
+                                  </SelectPrimitive.Item>
+                                ))}
+                              </SelectPrimitive.Group>
+                            )}
+                            {getBestInvoiceProductMatches(
+                              productSelection.candidates,
+                              catalogProducts,
+                              productSelection.row.description,
+                            ).length === 0 &&
+                              productSearch.trim().length < 2 && (
                                 <p
                                   role="status"
                                   className="px-2 py-3 text-center text-sm text-gray-500"
                                 >
-                                  {t("invoice_searching_products")}
+                                  {t("invoice_search_for_product")}
                                 </p>
                               )}
-                              {catalogSearchError && (
-                                <p
-                                  role="alert"
-                                  className="px-2 py-3 text-center text-sm text-red-600"
-                                >
-                                  {t("invoice_search_failed")}
-                                </p>
-                              )}
-                              {!catalogSearchLoading &&
-                                !catalogSearchError &&
-                                productSearch.trim().length >= 2 &&
-                                getInvoiceProductSearchResults(
-                                  productSelection.candidates,
+                            {productSearch.trim().length >= 2 && (
+                              <SelectPrimitive.Group>
+                                <SelectPrimitive.Label className="px-2 py-1 text-xs font-semibold text-gray-500">
+                                  {t("invoice_search_results")}
+                                </SelectPrimitive.Label>
+                                {getInvoiceCatalogSearchResults(
                                   catalogProducts,
-                                  productSearch,
-                                ).length === 0 && (
-                                  <p
-                                    role="status"
-                                    className="px-2 py-3 text-center text-sm text-gray-500"
+                                  getBestInvoiceProductMatches(
+                                    productSelection.candidates,
+                                    catalogProducts,
+                                    productSelection.row.description,
+                                  ),
+                                ).map((product) => (
+                                  <SelectPrimitive.Item
+                                    key={product.slug}
+                                    value={product.slug}
+                                    className="min-h-8 cursor-pointer rounded-sm px-2 py-1.5 text-sm outline-none data-highlighted:bg-blue-50 data-highlighted:text-blue-900"
                                   >
-                                    {t("invoice_search_empty")}
-                                  </p>
-                                )}
-                            </SelectPrimitive.Viewport>
-                            <SelectPrimitive.ScrollDownButton className="flex h-6 items-center justify-center">
-                              <ChevronDown className="size-4" />
-                            </SelectPrimitive.ScrollDownButton>
-                          </SelectPrimitive.Content>
-                        </div>
-                      </SelectPrimitive.Portal>
-                    </SelectPrimitive.Root>
-                  ) : (
-                    <Button
-                      type="button"
-                      variant="white"
-                      size="sm"
-                      autoFocus={index === 0}
-                      disabled={isSubmitting}
-                      className="h-auto min-h-8 max-w-full justify-between gap-2 whitespace-normal px-2.5 py-1.5 text-left"
-                      onClick={() =>
-                        handleProductSelect(
-                          productSelection.row.row,
-                          productSelection.candidates[0],
-                        )
-                      }
-                    >
-                      <span className="min-w-0 wrap-break-word text-sm font-medium">
-                        {productSelection.candidates[0]?.name}
-                      </span>
-                      <span className="shrink-0 text-xs font-normal text-gray-500">
-                        {t("invoice_product_match", {
-                          percent: scoreInvoiceProduct(
-                            productSelection.candidates[0],
-                            productSelection.row.description,
-                            productSelection.row.hsnSac,
-                          ),
-                        })}
-                      </span>
-                      <ArrowRight className="text-blue-700" />
-                    </Button>
-                  )}
+                                    <SelectPrimitive.ItemText>
+                                      <span className="min-w-0 wrap-break-word">
+                                        {product.name}
+                                      </span>
+                                    </SelectPrimitive.ItemText>
+                                  </SelectPrimitive.Item>
+                                ))}
+                              </SelectPrimitive.Group>
+                            )}
+                            {catalogSearchLoading && (
+                              <p
+                                role="status"
+                                className="px-2 py-3 text-center text-sm text-gray-500"
+                              >
+                                {t("invoice_searching_products")}
+                              </p>
+                            )}
+                            {catalogSearchError && (
+                              <p
+                                role="alert"
+                                className="px-2 py-3 text-center text-sm text-red-600"
+                              >
+                                {t("invoice_search_failed")}
+                              </p>
+                            )}
+                            {!catalogSearchLoading &&
+                              !catalogSearchError &&
+                              productSearch.trim().length >= 2 &&
+                              catalogProducts.length === 0 && (
+                                <p
+                                  role="status"
+                                  className="px-2 py-3 text-center text-sm text-gray-500"
+                                >
+                                  {t("invoice_search_empty")}
+                                </p>
+                              )}
+                          </SelectPrimitive.Viewport>
+                          <SelectPrimitive.ScrollDownButton className="flex h-6 items-center justify-center">
+                            <ChevronDown className="size-4" />
+                          </SelectPrimitive.ScrollDownButton>
+                        </SelectPrimitive.Content>
+                      </div>
+                    </SelectPrimitive.Portal>
+                  </SelectPrimitive.Root>
                 </div>
                 <Button
                   type="button"
