@@ -7,6 +7,7 @@ import {
   ChevronUp,
   FileText,
   Plus,
+  Search,
   SkipForward,
   Sparkles,
   Upload,
@@ -28,6 +29,7 @@ import {
   isEmptyInvoiceTarget,
   parseInvoiceResult,
   resolveInvoiceRows,
+  searchInvoiceProductCatalog,
   scoreInvoiceProduct,
   type ImportedInvoiceItem,
   type InvoiceMonetaryConfig,
@@ -80,7 +82,35 @@ function isInvoiceFile(file: File): boolean {
   );
 }
 
-const INVOICE_ROW_LIMIT = 100;
+function filterInvoiceProducts(
+  products: InvoiceProduct[],
+  search: string,
+): InvoiceProduct[] {
+  const query = search.trim().toLowerCase();
+  if (!query) return products;
+  return products.filter((product) =>
+    [
+      product.name,
+      product.slug,
+      product.alternate_identifier ?? "",
+      ...(product.names?.map((name) => name.name) ?? []),
+    ].some((value) => value.toLowerCase().includes(query)),
+  );
+}
+
+function getInvoiceProductSearchResults(
+  candidates: InvoiceProduct[],
+  catalogProducts: InvoiceProduct[],
+  search: string,
+): InvoiceProduct[] {
+  const query = search.trim();
+  const products =
+    query.length >= 2 ? [...catalogProducts, ...candidates] : candidates;
+  return filterInvoiceProducts(
+    [...new Map(products.map((product) => [product.slug, product])).values()],
+    query,
+  );
+}
 
 export default function InvoiceOCR({
   facilityId,
@@ -102,6 +132,13 @@ export default function InvoiceOCR({
       candidates: InvoiceProduct[];
     }[]
   >([]);
+  const [productSearch, setProductSearch] = useState("");
+  const [activeProductSearchRow, setActiveProductSearchRow] = useState<
+    number | null
+  >(null);
+  const [catalogProducts, setCatalogProducts] = useState<InvoiceProduct[]>([]);
+  const [catalogSearchLoading, setCatalogSearchLoading] = useState(false);
+  const [catalogSearchError, setCatalogSearchError] = useState(false);
   const pendingSelections = useRef(
     new Map<number, (product: InvoiceProduct | undefined) => void>(),
   );
@@ -146,6 +183,40 @@ export default function InvoiceOCR({
       clearWarningHighlight.current = undefined;
     };
   }, [deliveryOrderId, facilityId]);
+
+  useEffect(() => {
+    const query = productSearch.trim();
+    if (activeProductSearchRow == null || query.length < 2) {
+      setCatalogProducts([]);
+      setCatalogSearchLoading(false);
+      setCatalogSearchError(false);
+      return;
+    }
+
+    let cancelled = false;
+    const timeout = window.setTimeout(() => {
+      setCatalogSearchLoading(true);
+      setCatalogSearchError(false);
+      void searchInvoiceProductCatalog(query, facilityId)
+        .then((products) => {
+          if (!cancelled) setCatalogProducts(products);
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setCatalogProducts([]);
+            setCatalogSearchError(true);
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setCatalogSearchLoading(false);
+        });
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [activeProductSearchRow, facilityId, productSearch]);
 
   useEffect(() => {
     if (!isSubmitting && enabled) return;
@@ -243,10 +314,10 @@ export default function InvoiceOCR({
     try {
       const result = await runMedispeakOcr(files, {
         facilityId,
-        fields: buildInvoiceFields(INVOICE_ROW_LIMIT),
+        fields: buildInvoiceFields(),
       });
       if (run !== generation.current) return;
-      const parsed = parseInvoiceResult(result, INVOICE_ROW_LIMIT);
+      const parsed = parseInvoiceResult(result);
       const monetaryWarnings: string[] = [];
       const [facilityConfig, extensionConfig] = await Promise.all([
         fetchInvoiceMonetaryConfig(facilityId).catch(() => {
@@ -618,15 +689,28 @@ export default function InvoiceOCR({
                     <SelectPrimitive.Root
                       value=""
                       disabled={isSubmitting}
-                      onValueChange={(slug) => {
-                        const product = productSelection.candidates.find(
-                          (candidate) => candidate.slug === slug,
+                      onOpenChange={(open) => {
+                        setProductSearch("");
+                        setActiveProductSearchRow(
+                          open ? productSelection.row.row : null,
                         );
-                        if (product)
+                        setCatalogProducts([]);
+                        setCatalogSearchError(false);
+                      }}
+                      onValueChange={(slug) => {
+                        const product = getInvoiceProductSearchResults(
+                          productSelection.candidates,
+                          catalogProducts,
+                          productSearch,
+                        ).find((candidate) => candidate.slug === slug);
+                        if (product) {
                           handleProductSelect(
                             productSelection.row.row,
                             product,
                           );
+                          setProductSearch("");
+                          setActiveProductSearchRow(null);
+                        }
                       }}
                     >
                       <SelectPrimitive.Trigger asChild>
@@ -656,11 +740,41 @@ export default function InvoiceOCR({
                             sideOffset={4}
                             className="z-50 max-h-(--radix-select-content-available-height) w-(--radix-select-trigger-width) max-w-[calc(100vw-2rem)] overflow-hidden rounded-md border border-gray-200 bg-white text-gray-900 shadow-md"
                           >
+                            <div className="border-b border-gray-200 p-2">
+                              <div className="flex h-9 items-center gap-2 rounded-md border border-gray-300 px-2">
+                                <Search className="size-4 shrink-0 text-gray-500" />
+                                <input
+                                  type="search"
+                                  autoFocus
+                                  value={productSearch}
+                                  aria-label={t("invoice_search")}
+                                  placeholder={t("invoice_search")}
+                                  className="min-w-0 flex-1 bg-transparent text-base sm:text-sm outline-none placeholder:text-gray-500 border-0 ring-0"
+                                  onChange={(event) =>
+                                    setProductSearch(event.target.value)
+                                  }
+                                  onKeyDown={(event) => {
+                                    if (
+                                      event.key.length === 1 &&
+                                      !event.ctrlKey &&
+                                      !event.metaKey &&
+                                      !event.altKey
+                                    ) {
+                                      event.stopPropagation();
+                                    }
+                                  }}
+                                />
+                              </div>
+                            </div>
                             <SelectPrimitive.ScrollUpButton className="flex h-6 items-center justify-center">
                               <ChevronUp className="size-4" />
                             </SelectPrimitive.ScrollUpButton>
                             <SelectPrimitive.Viewport className="max-h-64 p-1">
-                              {productSelection.candidates.map((product) => (
+                              {getInvoiceProductSearchResults(
+                                productSelection.candidates,
+                                catalogProducts,
+                                productSearch,
+                              ).map((product) => (
                                 <SelectPrimitive.Item
                                   key={product.slug}
                                   value={product.slug}
@@ -676,6 +790,7 @@ export default function InvoiceOCR({
                                           percent: scoreInvoiceProduct(
                                             product,
                                             productSelection.row.description,
+                                            productSelection.row.hsnSac,
                                           ),
                                         })}
                                       </span>
@@ -683,6 +798,37 @@ export default function InvoiceOCR({
                                   </SelectPrimitive.ItemText>
                                 </SelectPrimitive.Item>
                               ))}
+                              {catalogSearchLoading && (
+                                <p
+                                  role="status"
+                                  className="px-2 py-3 text-center text-sm text-gray-500"
+                                >
+                                  {t("invoice_searching_products")}
+                                </p>
+                              )}
+                              {catalogSearchError && (
+                                <p
+                                  role="alert"
+                                  className="px-2 py-3 text-center text-sm text-red-600"
+                                >
+                                  {t("invoice_search_failed")}
+                                </p>
+                              )}
+                              {!catalogSearchLoading &&
+                                !catalogSearchError &&
+                                productSearch.trim().length >= 2 &&
+                                getInvoiceProductSearchResults(
+                                  productSelection.candidates,
+                                  catalogProducts,
+                                  productSearch,
+                                ).length === 0 && (
+                                  <p
+                                    role="status"
+                                    className="px-2 py-3 text-center text-sm text-gray-500"
+                                  >
+                                    {t("invoice_search_empty")}
+                                  </p>
+                                )}
                             </SelectPrimitive.Viewport>
                             <SelectPrimitive.ScrollDownButton className="flex h-6 items-center justify-center">
                               <ChevronDown className="size-4" />
@@ -714,6 +860,7 @@ export default function InvoiceOCR({
                           percent: scoreInvoiceProduct(
                             productSelection.candidates[0],
                             productSelection.row.description,
+                            productSelection.row.hsnSac,
                           ),
                         })}
                       </span>

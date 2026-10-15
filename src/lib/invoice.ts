@@ -8,6 +8,7 @@ export interface InvoiceProduct {
   id: string;
   slug: string;
   name: string;
+  alternate_identifier?: string;
   names?: { name: string }[];
   code?: { code: string; display?: string; system?: string };
   base_unit: { code: string; display?: string; system?: string };
@@ -16,6 +17,7 @@ export interface InvoiceProduct {
 export interface InvoiceRow {
   row: number;
   description: string;
+  hsnSac?: string;
   batch: string;
   expiry: string;
   quantity: string;
@@ -58,8 +60,6 @@ export interface InvoiceMonetaryConfig {
 }
 
 export interface InvoiceDraft {
-  invoiceNumber: string;
-  supplier: string;
   rows: InvoiceRow[];
   errors: number[];
   rowCount: number | null;
@@ -150,18 +150,27 @@ export async function resolveInvoiceRows(
     if (isCancelled()) return;
     onRow(row.row);
     let searchFailed = false;
-    let candidates = productsCache.get(row.description);
+    const cacheKey = `${row.description}\u0000${row.hsnSac ?? ""}`;
+    let candidates = productsCache.get(cacheKey);
     if (!candidates) {
       try {
-        candidates = await searchInvoiceProducts(row.description, facilityId);
+        candidates = await searchInvoiceProducts(
+          row.description,
+          facilityId,
+          row.hsnSac,
+        );
       } catch {
         candidates = [];
         searchFailed = true;
       }
-      productsCache.set(row.description, candidates);
+      productsCache.set(cacheKey, candidates);
     }
     if (isCancelled()) return;
-    const matches = getInvoiceProductMatches(candidates, row.description);
+    const matches = getInvoiceProductMatches(
+      candidates,
+      row.description,
+      row.hsnSac,
+    );
     const exact = matchInvoiceProduct(matches, row.description);
     selections.push({
       row,
@@ -269,27 +278,17 @@ export async function resolveInvoiceRows(
   return { items, unmatched, issues };
 }
 
-export function buildInvoiceFields(rowLimit: number): MedispeakFieldSpec[] {
+const INVOICE_ROW_EXTRACTION_RULES =
+  "Extract only goods rows from the current invoice line-item tables. Ignore pending-bill ledgers, previous invoices, balance summaries, tax summaries, headers and subtotals. Include separate rows or batches even when descriptions match, in document order across all unique invoice pages. Capture each row's HSN/SAC exactly when readable; never substitute a GST rate or another row's code. Preserve medicine brand, strength and dosage form in description. quantity excludes free_quantity. Read pack_size from the Pack column as the numeric count of base units per billed pack; normalize count notation such as 10's to 10. Return null for volume/strength labels such as 2.5 ML unless a count of base units is explicitly printed. Preserve expiry as printed, including month/year. mrp and purchase_rate are per billed unit, not row totals. total_purchase_price is the final amount for that goods row. selling_price is only an explicitly labelled hospital resale price per base unit, never supplier Rate/SP. Tax fields are percentages, not rupee amounts. gst_rate is combined GST only when explicitly printed; do not invent CGST/SGST splits. discount_percent is a row discount percentage, not a rupee amount. Use strings or null for item values.";
+
+export function buildInvoiceFields(): MedispeakFieldSpec[] {
   return [
-    { key: "invoice_number", label: "Supplier invoice number", type: "string" },
-    { key: "supplier", label: "Supplier name", type: "string" },
     {
-      key: "row_count",
-      label: "Total number of goods rows across all uploaded pages",
-      type: "number",
-      description:
-        "Count ALL goods rows, even if there are more than the available row fields. Exclude headers, subtotals and taxes. Do not merge different batches.",
+      key: "invoice_rows",
+      label: "Invoice goods rows",
+      type: "string",
+      description: `Return one JSON object as a string with keys row_count and rows. row_count is the number of goods rows. rows is an array containing only rows present in the invoice; do not add empty placeholders. Each row must be an object with keys description, hsn_sac, batch, expiry, quantity, free_quantity, pack_size, unit, mrp, selling_price, purchase_rate, total_purchase_price, discount_percent, cgst_rate, sgst_rate, igst_rate, gst_rate. ${INVOICE_ROW_EXTRACTION_RULES}`,
     },
-    ...Array.from(
-      { length: rowLimit },
-      (_, index): MedispeakFieldSpec => ({
-        key: `row_${index + 1}`,
-        label: `Invoice goods row ${index + 1}`,
-        type: "string",
-        description:
-          "Return a JSON object as a string with keys description, batch, expiry, quantity, free_quantity, pack_size, unit, mrp, selling_price, purchase_rate, total_purchase_price, discount_percent, cgst_rate, sgst_rate, igst_rate, gst_rate. Preserve medicine brand, strength and dosage form in description. quantity excludes free_quantity. pack_size is base units per billed unit, ONLY if explicitly printed. Preserve expiry as printed, including month/year. mrp is MRP per billed unit, NOT a row total. purchase_rate is the supplier rate per billed unit. total_purchase_price is the final amount for THIS goods row, not the invoice total. selling_price is ONLY an explicitly labelled hospital resale price per base unit, never supplier Rate/SP. Tax fields are percentages, not rupee tax amounts. gst_rate is combined GST only when explicitly printed. Do not invent CGST/SGST splits. discount_percent is a row discount percentage, not a rupee amount. All values must be strings or null. Never invent missing values. Return null for unused rows. Read rows in document order across all pages.",
-      }),
-    ),
   ];
 }
 
@@ -308,48 +307,70 @@ function unwrap(value: unknown): unknown {
 
 export function parseInvoiceResult(
   result: Record<string, unknown>,
-  rowLimit: number,
 ): InvoiceDraft {
   const rows: InvoiceRow[] = [];
   const errors: number[] = [];
-  for (let index = 1; index <= rowLimit; index++) {
-    const raw = unwrap(result[`row_${index}`]);
-    if (raw == null || raw === "" || raw === "null") continue;
+  let output: unknown;
+  try {
+    const raw = unwrap(result.invoice_rows);
+    output = typeof raw === "string" ? JSON.parse(raw) : raw;
+  } catch {
+    return { rows, errors: [1], rowCount: null };
+  }
+  if (!output || typeof output !== "object" || Array.isArray(output)) {
+    return { rows, errors: [1], rowCount: null };
+  }
+  const fields = output as Record<string, unknown>;
+  let extractedRows = unwrap(fields.rows);
+  if (typeof extractedRows === "string") {
     try {
-      const value: unknown = typeof raw === "string" ? JSON.parse(raw) : raw;
-      if (value == null) continue;
-      if (typeof value !== "object" || Array.isArray(value)) {
-        throw new Error("Invalid invoice row");
-      }
-      const fields = value as Record<string, unknown>;
-      if (!text(fields.description)) throw new Error("Missing description");
-      rows.push({
-        row: index,
-        description: text(fields.description),
-        batch: text(fields.batch),
-        expiry: text(fields.expiry),
-        quantity: text(fields.quantity),
-        freeQuantity: text(fields.free_quantity),
-        packSize: text(fields.pack_size),
-        unit: text(fields.unit),
-        mrp: text(fields.mrp),
-        sellingPrice: text(fields.selling_price),
-        purchaseRate: text(fields.purchase_rate),
-        totalPurchasePrice: text(fields.total_purchase_price),
-        discountPercent: text(fields.discount_percent),
-        cgstRate: text(fields.cgst_rate),
-        sgstRate: text(fields.sgst_rate),
-        igstRate: text(fields.igst_rate),
-        gstRate: text(fields.gst_rate),
-      });
+      extractedRows = JSON.parse(extractedRows);
     } catch {
-      errors.push(index);
+      extractedRows = null;
     }
   }
-  const count = Number(text(unwrap(result.row_count)) || NaN);
+  if (!Array.isArray(extractedRows)) {
+    const count = Number(text(unwrap(fields.row_count)) || NaN);
+    return {
+      rows,
+      errors: [1],
+      rowCount: Number.isSafeInteger(count) && count >= 0 ? count : null,
+    };
+  }
+  extractedRows.forEach((raw, index) => {
+    try {
+      const value: unknown = typeof raw === "string" ? JSON.parse(raw) : raw;
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("Invalid invoice row");
+      }
+      const row = value as Record<string, unknown>;
+      if (!text(row.description)) throw new Error("Missing description");
+      rows.push({
+        row: index + 1,
+        description: text(row.description),
+        hsnSac: text(row.hsn_sac),
+        batch: text(row.batch),
+        expiry: text(row.expiry),
+        quantity: text(row.quantity),
+        freeQuantity: text(row.free_quantity),
+        packSize: text(row.pack_size),
+        unit: text(row.unit),
+        mrp: text(row.mrp),
+        sellingPrice: text(row.selling_price),
+        purchaseRate: text(row.purchase_rate),
+        totalPurchasePrice: text(row.total_purchase_price),
+        discountPercent: text(row.discount_percent),
+        cgstRate: text(row.cgst_rate),
+        sgstRate: text(row.sgst_rate),
+        igstRate: text(row.igst_rate),
+        gstRate: text(row.gst_rate),
+      });
+    } catch {
+      errors.push(index + 1);
+    }
+  });
+  const count = Number(text(unwrap(fields.row_count)) || NaN);
   return {
-    invoiceNumber: text(unwrap(result.invoice_number)),
-    supplier: text(unwrap(result.supplier)),
     rows,
     errors,
     rowCount: Number.isSafeInteger(count) && count >= 0 ? count : null,
@@ -420,6 +441,13 @@ function integer(value: string, minimum: number): number | null {
   if (!/^\d+$/.test(value.trim())) return null;
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed >= minimum ? parsed : null;
+}
+
+function invoicePackSize(value: string): number | null {
+  const match = value
+    .trim()
+    .match(/^(\d+)\s*(?:['’]s|s|tablets?|tabs?|capsules?|caps?|units?)?$/i);
+  return match ? integer(match[1], 1) : null;
 }
 
 export function invoiceDecimal(value?: string): string | undefined {
@@ -552,7 +580,7 @@ export function prepareInvoiceItem(
 ): ImportedInvoiceItem {
   const quantity = integer(row.quantity, 0);
   const freeQuantity = integer(row.freeQuantity || "0", 0);
-  const packSize = integer(row.packSize || "1", 1);
+  const packSize = invoicePackSize(row.packSize || "1");
   const packs =
     quantity != null && freeQuantity != null
       ? quantity + freeQuantity
@@ -824,7 +852,12 @@ function normalized(value: string): string {
 export function scoreInvoiceProduct(
   product: InvoiceProduct,
   description: string,
+  hsnSac = "",
 ): number {
+  const invoiceCode = hsnSac.replace(/\D/g, "");
+  const productCode = (product.alternate_identifier ?? "").replace(/\D/g, "");
+  const identifierScore =
+    invoiceCode && productCode && invoiceCode === productCode ? 75 : 0;
   const names = [
     product.name,
     ...(product.names?.map((name) => name.name) ?? []),
@@ -900,7 +933,7 @@ export function scoreInvoiceProduct(
         bestGeneric = Math.max(bestGeneric, score);
       }
     }
-    const nameTokens =
+    const nameTokens: string[] =
       name.match(/[a-z]+|\d+(?:\.\d+)?(?:mg|mcg|g|iu|ml)?/g) ?? [];
     const sharedTokens = queryTokens.filter((token) =>
       nameTokens.includes(token),
@@ -925,22 +958,26 @@ export function scoreInvoiceProduct(
   const best = bestDoseAware > 0 ? bestDoseAware : bestGeneric;
   return Math.max(
     0,
-    names.some((name) => name.includes("containing product"))
-      ? best - 25
-      : best,
+    Math.max(
+      names.some((name) => name.includes("containing product"))
+        ? best - 25
+        : best,
+      identifierScore,
+    ),
   );
 }
 
 export function getInvoiceProductMatches(
   candidates: InvoiceProduct[],
   description: string,
+  hsnSac = "",
 ): InvoiceProduct[] {
   return [
     ...new Map(candidates.map((product) => [product.slug, product])).values(),
   ]
     .map((product) => ({
       product,
-      score: scoreInvoiceProduct(product, description),
+      score: scoreInvoiceProduct(product, description, hsnSac),
     }))
     .filter(({ score }) => score >= 20)
     .sort((first, second) => second.score - first.score)
@@ -967,8 +1004,30 @@ export function matchInvoiceProduct(
 export async function searchInvoiceProducts(
   description: string,
   facilityId: string,
+  hsnSac = "",
 ): Promise<InvoiceProduct[]> {
   const products = new Map<string, InvoiceProduct>();
+  const identifier = hsnSac.replace(/\D/g, "");
+  if (identifier) {
+    try {
+      const url = new URL("/api/v1/product_knowledge/", window.CARE_API_URL);
+      url.search = new URLSearchParams({
+        facility: facilityId,
+        include_instance: "true",
+        status: "active",
+        alternate_identifier: identifier,
+        limit: "20",
+        offset: "0",
+      }).toString();
+      const response = await fetch(url, { headers: getHeaders() });
+      if (response.ok) {
+        const data = (await response.json()) as { results: InvoiceProduct[] };
+        for (const product of data.results) products.set(product.slug, product);
+      }
+    } catch {
+      // Keep name search available if identifier lookup fails.
+    }
+  }
   for (const query of buildProductQueries(description)) {
     const url = new URL("/api/v1/product_knowledge/", window.CARE_API_URL);
     url.search = new URLSearchParams({
@@ -990,4 +1049,46 @@ export async function searchInvoiceProducts(
       scoreInvoiceProduct(second, description) -
       scoreInvoiceProduct(first, description),
   );
+}
+
+export async function searchInvoiceProductCatalog(
+  query: string,
+  facilityId: string,
+): Promise<InvoiceProduct[]> {
+  const trimmedQuery = query.trim();
+  if (!trimmedQuery) return [];
+
+  const filters: ("name" | "alternate_names" | "alternate_identifier")[] = [
+    "name",
+    "alternate_names",
+  ];
+  const identifier = trimmedQuery.replace(/\D/g, "");
+  if (/^[\d\s-]+$/.test(trimmedQuery) && identifier.length >= 2) {
+    filters.push("alternate_identifier");
+  }
+
+  const resultSets = await Promise.all(
+    filters.map(async (filter) => {
+      const url = new URL("/api/v1/product_knowledge/", window.CARE_API_URL);
+      url.search = new URLSearchParams({
+        facility: facilityId,
+        include_instance: "true",
+        status: "active",
+        [filter]: filter === "alternate_identifier" ? identifier : trimmedQuery,
+        limit: "20",
+        offset: "0",
+      }).toString();
+      const response = await fetch(url, { headers: getHeaders() });
+      if (!response.ok)
+        throw new Error(`Product search failed (${response.status})`);
+      const data = (await response.json()) as { results: InvoiceProduct[] };
+      return data.results;
+    }),
+  );
+
+  return [
+    ...new Map(
+      resultSets.flat().map((product) => [product.slug, product]),
+    ).values(),
+  ];
 }

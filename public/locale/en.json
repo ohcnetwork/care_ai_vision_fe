@@ -70,6 +70,8 @@
   "invoice_include_row": "Include row {{row}}",
   "invoice_description": "Invoice description at row {{row}}",
   "invoice_search": "Search CARE products",
+  "invoice_searching_products": "Searching product knowledge...",
+  "invoice_search_empty": "No products found",
   "invoice_product_row": "CARE product at row {{row}}",
   "invoice_select_product": "Select matching product",
   "invoice_no_match": "No match selected",
