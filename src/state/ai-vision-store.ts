@@ -1,15 +1,15 @@
+import { getHeaders } from "@/lib/request";
 import { atom } from "jotai";
 import { atomWithStorage, createJSONStorage } from "jotai/utils";
-
-import { getHeaders } from "@/lib/request";
 
 const STORAGE_KEY_PREFIX = "care_ai_vision.enabled";
 const PREFERENCE_KEY = "care_ai_vision";
 const PREFERENCE_VERSION = "1.0";
 
 /**
- * Local atom backed by localStorage — used as fast cache.
- * The settings page syncs this with the server-side user preferences API.
+ * Local atom backed by localStorage — used as a per-device cache.
+ * `useAiVisionEnabled` hydrates this from the server so a new device
+ * still respects the user-level preference.
  */
 export function aiVisionEnabledAtomFor(userId: string) {
   return atomWithStorage<boolean>(
@@ -50,5 +50,5 @@ export async function setAiVisionPreference(enabled: boolean): Promise<void> {
   );
 }
 
-/** Atom that tracks whether we've already synced from server this session. */
-export const preferencesSyncedAtom = atom(false);
+/** User key whose server preference has already been hydrated this session. */
+export const preferencesSyncedForAtom = atom<string | null>(null);
