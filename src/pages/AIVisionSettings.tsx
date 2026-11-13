@@ -7,6 +7,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
+import { useAiVisionAnimateFill } from "@/hooks/useAiVisionAnimateFill";
 import { useAiVisionEnabled } from "@/hooks/useAiVisionEnabled";
 import { useHasFacilityPermission } from "@/hooks/useFacilityPermission";
 import { useTranslation } from "@/hooks/useTranslation";
@@ -17,6 +18,7 @@ export default function AIVisionSettings() {
   const { hasPermission, isLoading: isPermissionLoading } =
     useHasFacilityPermission("can_use_filly");
   const { enabled, setEnabled } = useAiVisionEnabled();
+  const { animateFill, setAnimateFill } = useAiVisionAnimateFill();
 
   return (
     <div className="care-ai-vision-container mx-auto max-w-3xl py-8 px-4">
@@ -63,6 +65,19 @@ export default function AIVisionSettings() {
               {enabled ? t("plugin_enabled") : t("plugin_disabled")}
             </div>
             <Switch checked={enabled} onCheckedChange={setEnabled} />
+          </CardContent>
+          <CardContent className="flex items-center justify-between gap-4 border-t pt-5">
+            <div className="space-y-1">
+              <p className="text-sm font-medium">{t("animate_row_filling")}</p>
+              <p className="text-sm text-muted-foreground">
+                {t("animate_row_filling_description")}
+              </p>
+            </div>
+            <Switch
+              checked={animateFill}
+              onCheckedChange={setAnimateFill}
+              aria-label={t("animate_row_filling")}
+            />
           </CardContent>
         </Card>
       )}

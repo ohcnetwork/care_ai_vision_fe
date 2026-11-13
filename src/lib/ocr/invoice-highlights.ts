@@ -55,6 +55,7 @@ export async function fillInvoiceRowsSequentially(
   fillRow: (index: number) => void,
   onFilled: (mark: InvoiceRowHighlight) => void,
   isCancelled: () => boolean,
+  animate = true,
 ): Promise<boolean> {
   const nextFrame = () =>
     new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
@@ -67,6 +68,13 @@ export async function fillInvoiceRowsSequentially(
     );
   await nextFrame();
   await nextFrame();
+  if (!animate) {
+    if (isCancelled()) return false;
+    for (const mark of marks) fillRow(mark.index);
+    await nextFrame();
+    for (const mark of marks) onFilled(mark);
+    return true;
+  }
   for (const mark of marks) {
     if (isCancelled()) return false;
     const row = scope

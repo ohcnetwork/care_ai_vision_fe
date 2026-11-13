@@ -98,13 +98,13 @@
   "invoice_monetary_config_missing": "Facility monetary configuration could not be loaded. Check tax, MRP and discount selections.",
   "invoice_tax_review": "Review tax components and rates",
   "invoice_mrp_review": "Invoice MRP: {{value}} - check the facility MRP configuration",
-  "invoice_discount_review": "Invoice discount: {{value}}% - select the configured discount",
-  "invoice_purchase_rate_review": "Purchase rate: {{value}} per billed unit. Review purchase total.",
   "invoice_form_submitting": "The receipt is being saved. Extract the invoice again after saving finishes.",
   "invoice_product_defaults_missing": "Product defaults could not be loaded. Check category and prices.",
   "invoice_product_match": "{{percent}}% name match",
   "invoice_review_row": "Receipt row {{row}}",
   "invoice_notes": "Invoice notes",
   "invoice_receipt_review": "Receipt rows to review",
-  "invoice_extension_config_missing": "Extension settings could not be loaded. Review the additional receipt fields."
+  "invoice_extension_config_missing": "Extension settings could not be loaded. Review the additional receipt fields.",
+  "animate_row_filling": "Animate invoice row filling",
+  "animate_row_filling_description": "Fill invoice rows one by one with a highlight. When off, all rows fill at once."
 }

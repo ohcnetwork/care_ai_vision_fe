@@ -26,9 +26,7 @@ export interface InvoiceRow {
   unit: string;
   mrp?: string;
   sellingPrice?: string;
-  purchaseRate?: string;
   totalPurchasePrice?: string;
-  discountPercent?: string;
   cgstRate?: string;
   sgstRate?: string;
   igstRate?: string;
@@ -77,6 +75,8 @@ export interface ImportedInvoiceItem {
   expiry_date: string;
   unit_price?: string;
   total_purchase_price?: string;
+  is_total_purchase_price_edited?: boolean;
+  is_charge_item_edited?: boolean;
   informational_components?: InvoiceMonetaryComponent[];
   tax_components?: InvoiceMonetaryComponent[];
   discount_components?: InvoiceMonetaryComponent[];
@@ -248,22 +248,6 @@ export async function resolveInvoiceRows(
       attention.push("mrp");
       details.push(translate("invoice_mrp_review", { value: row.mrp }));
     }
-    if (
-      row.discountPercent &&
-      !item.discount_components?.length &&
-      invoiceDecimal(row.discountPercent) !== "0"
-    ) {
-      attention.push("tax");
-      details.push(
-        translate("invoice_discount_review", { value: row.discountPercent }),
-      );
-    }
-    if (row.purchaseRate && !item.total_purchase_price) {
-      attention.push("purchaseTotal");
-      details.push(
-        translate("invoice_purchase_rate_review", { value: row.purchaseRate }),
-      );
-    }
     items.push(item);
     issues.push({
       offset: items.length - 1,
@@ -276,7 +260,7 @@ export async function resolveInvoiceRows(
 }
 
 const INVOICE_ROW_EXTRACTION_RULES =
-  "Extract only goods rows from the current invoice line-item tables. Ignore pending-bill ledgers, previous invoices, balance summaries, tax summaries, headers and subtotals. Include separate rows or batches even when descriptions match, in document order across all unique invoice pages. Capture each row's HSN/SAC exactly when readable; never substitute a GST rate or another row's code. Preserve medicine brand, strength and dosage form in description. quantity is the paid/billed pack count only. free_quantity is the count of extra free, bonus or scheme packs, in packs; do not treat it as a percentage or discount. The received pack count is quantity plus free_quantity. Read free_quantity from the Free, Bonus or Scheme quantity column when it contains a count. discount_percent must come only from a value explicitly printed in a Discount, Disc % or Discount % column; never infer it from Free, Bonus or Scheme quantity. If no explicit discount percentage is printed, return null. Read pack_size from the Pack column as the numeric count of base units per billed pack; normalize count notation such as 10's to 10. Return null for volume/strength labels such as 2.5 ML unless a count of base units is explicitly printed. Preserve expiry as printed, including month/year. mrp and purchase_rate are per billed unit, not row totals. total_purchase_price is the final amount for that goods row. selling_price is only an explicitly labelled hospital resale price per base unit, never supplier Rate/SP. Tax fields are percentages, not rupee amounts. gst_rate is combined GST only when explicitly printed; do not invent CGST/SGST splits. discount_percent is a percentage, not a rupee amount. Use strings or null for item values.";
+  "Extract only goods rows from the current invoice line-item tables. Ignore pending-bill ledgers, previous invoices, balance summaries, tax summaries, headers and subtotals. Include separate rows or batches even when descriptions match, in document order across all unique invoice pages. Capture each row's HSN/SAC exactly when readable; never substitute a GST rate or another row's code. Preserve medicine brand, strength and dosage form in description. quantity is the paid/billed pack count only. free_quantity is the count of extra free, bonus or scheme packs, in packs; do not treat it as a percentage or discount. Ignore any discount column or discount percentage on the invoice; do not return it. The received pack count is quantity plus free_quantity. Read free_quantity from the Free, Bonus or Scheme quantity column when it contains a count. Read pack_size from the Pack column as the numeric count of base units per billed pack; normalize count notation such as 10's to 10. Return null for volume/strength labels such as 2.5 ML unless a count of base units is explicitly printed. Preserve expiry as printed, including month/year. mrp is per billed pack, not a row total. total_purchase_price is the TPR: the supplier's price for ONE billed pack (one strip, vial or unit as billed), read from the Trade Price, PTR, PTS, List Price, Rate or Unit Price column before tax and discount. It is never the row Amount, Taxable Value, Net Value or line total, and never the MRP. When the row has no such column, return null. selling_price is only an explicitly labelled hospital resale price per base unit, never supplier Rate/SP. Tax fields are percentages, not rupee amounts. gst_rate is combined GST only when explicitly printed; do not invent CGST/SGST splits. Use strings or null for item values.";
 
 export function buildInvoiceFields(): MedispeakFieldSpec[] {
   return [
@@ -284,7 +268,7 @@ export function buildInvoiceFields(): MedispeakFieldSpec[] {
       key: "invoice_rows",
       label: "Invoice goods rows",
       type: "string",
-      description: `Return one JSON object as a string with keys row_count and rows. row_count is the number of goods rows. rows is an array containing only rows present in the invoice; do not add empty placeholders. Each row must be an object with keys description, hsn_sac, batch, expiry, quantity, free_quantity, pack_size, unit, mrp, selling_price, purchase_rate, total_purchase_price, discount_percent, cgst_rate, sgst_rate, igst_rate, gst_rate. ${INVOICE_ROW_EXTRACTION_RULES}`,
+      description: `Return one JSON object as a string with keys row_count and rows. row_count is the number of goods rows. rows is an array containing only rows present in the invoice; do not add empty placeholders. Each row must be an object with keys description, hsn_sac, batch, expiry, quantity, free_quantity, pack_size, unit, mrp, selling_price, total_purchase_price, cgst_rate, sgst_rate, igst_rate, gst_rate. ${INVOICE_ROW_EXTRACTION_RULES}`,
     },
   ];
 }
@@ -354,9 +338,7 @@ export function parseInvoiceResult(
         unit: text(row.unit),
         mrp: text(row.mrp),
         sellingPrice: text(row.selling_price),
-        purchaseRate: text(row.purchase_rate),
         totalPurchasePrice: text(row.total_purchase_price),
-        discountPercent: text(row.discount_percent),
         cgstRate: text(row.cgst_rate),
         sgstRate: text(row.sgst_rate),
         igstRate: text(row.igst_rate),
@@ -615,19 +597,6 @@ export function prepareInvoiceItem(
           .dividedBy(packSize!)
           .toFixed(6)
       : undefined);
-  const discountRate = invoiceDecimal(row.discountPercent);
-  const discount =
-    discountRate == null
-      ? undefined
-      : [
-          ...(config.discount_monetary_components ?? []),
-          ...(config.instance_discount_monetary_components ?? []),
-        ].find(
-          (component) =>
-            component.monetary_component_type === "discount" &&
-            component.factor != null &&
-            new Decimal(component.factor).equals(discountRate),
-        );
   const item: ImportedInvoiceItem = {
     product_knowledge: product,
     supplied_item_quantity:
@@ -640,6 +609,9 @@ export function prepareInvoiceItem(
     expiry_date: normalizeInvoiceExpiry(row.expiry),
     unit_price: unitPrice,
     total_purchase_price: invoiceDecimal(row.totalPurchasePrice),
+    // care_fe recomputes TPR from the product unless this flag marks it as user-supplied
+    is_total_purchase_price_edited:
+      invoiceDecimal(row.totalPurchasePrice) != null,
     informational_components:
       mrp != null && mrpCode
         ? [
@@ -651,7 +623,7 @@ export function prepareInvoiceItem(
           ]
         : [],
     tax_components: taxComponents,
-    discount_components: discount ? [discount] : [],
+    discount_components: [],
     _is_inward_stock: true,
     is_manually_edited: true,
     is_tax_inclusive: taxInclusive,
@@ -694,8 +666,7 @@ export function prepareInvoiceItem(
     hasExplicitTaxes && !invoiceTaxNeedsReview(row, config)
       ? taxComponents
       : defaultTaxes;
-  item.discount_components =
-    discountRate === "0" ? [] : discount ? [discount] : defaultDiscounts;
+  item.discount_components = defaultDiscounts;
   item.informational_components = [...defaultInformation];
   if (mrp != null && mrpCode) {
     item.informational_components = [
@@ -707,13 +678,11 @@ export function prepareInvoiceItem(
   }
   if (
     item.total_purchase_price == null &&
-    !row.purchaseRate &&
     defaults.purchase_price != null &&
-    units != null &&
-    units > 0
+    packSize != null
   ) {
     item.total_purchase_price = new Decimal(defaults.purchase_price)
-      .times(units)
+      .times(packSize)
       .toFixed(6);
   }
   item.supplied_item = defaults;
@@ -738,13 +707,17 @@ export function prepareInvoiceItem(
           sameAmount(component.amount, other.amount),
       ),
     );
-  item.is_manually_edited =
-    item.batch_number !== defaultBatch ||
-    item.expiry_date !== defaultExpiry ||
+  // care_fe copies the product's existing price components on save unless the
+  // charge item is flagged as edited, which would drop imported tax/MRP values.
+  item.is_charge_item_edited =
     !sameAmount(item.unit_price, defaultPrice) ||
     !sameComponents(item.tax_components, defaultTaxes) ||
     !sameComponents(item.discount_components, defaultDiscounts) ||
     !sameComponents(item.informational_components, defaultInformation);
+  item.is_manually_edited =
+    item.batch_number !== defaultBatch ||
+    item.expiry_date !== defaultExpiry ||
+    item.is_charge_item_edited;
   return item;
 }
 

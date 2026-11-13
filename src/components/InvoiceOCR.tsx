@@ -1,10 +1,9 @@
-import * as SelectPrimitive from "@radix-ui/react-select";
+import * as PopoverPrimitive from "@radix-ui/react-popover";
 import {
   AlertCircle,
   ArrowRight,
   Camera,
   ChevronDown,
-  ChevronUp,
   FileText,
   Plus,
   Search,
@@ -19,7 +18,9 @@ import { createPortal } from "react-dom";
 import { PixelSpinner } from "@/components/ui/pixel-spinner";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
+import { Input } from "@/components/ui/input";
 import { MatrixSpinner } from "@/components/ui/matrix-spinner";
+import { useAiVisionAnimateFill } from "@/hooks/useAiVisionAnimateFill";
 import { useAiVisionEnabled } from "@/hooks/useAiVisionEnabled";
 import { useTranslation } from "@/hooks/useTranslation";
 import {
@@ -113,16 +114,6 @@ function getInvoiceCatalogSearchResults(
   return catalogProducts.filter((product) => !bestMatchSlugs.has(product.slug));
 }
 
-function findInvoiceProductBySlug(
-  slug: string,
-  candidates: InvoiceProduct[],
-  catalogProducts: InvoiceProduct[],
-): InvoiceProduct | undefined {
-  return [...candidates, ...catalogProducts].find(
-    (product) => product.slug === slug,
-  );
-}
-
 export default function InvoiceOCR({
   facilityId,
   deliveryOrderId,
@@ -130,6 +121,7 @@ export default function InvoiceOCR({
 }: Props) {
   const { t } = useTranslation();
   const { enabled } = useAiVisionEnabled();
+  const { animateFill } = useAiVisionAnimateFill();
   const [files, setFiles] = useState<File[]>([]);
   const [previews, setPreviews] = useState<QueuedFile[]>([]);
   const [preview, setPreview] = useState<QueuedFile | null>(null);
@@ -313,6 +305,12 @@ export default function InvoiceOCR({
     resolve?.(product);
   };
 
+  const selectCatalogProduct = (row: number, product: InvoiceProduct) => {
+    handleProductSelect(row, product);
+    setProductSearch("");
+    setActiveProductSearchRow(null);
+  };
+
   const extract = async () => {
     if (!files.length || isSubmitting || busy) return;
     const run = ++generation.current;
@@ -425,6 +423,7 @@ export default function InvoiceOCR({
             setFilled(mark.index - current.length + 1);
           },
           () => run !== generation.current || form.formState.isSubmitting,
+          animateFill,
         );
         if (!completed) return;
       } else {
@@ -696,9 +695,8 @@ export default function InvoiceOCR({
                   </p>
                 </div>
                 <div className="col-span-2 row-start-2 min-w-0 sm:col-span-1 sm:col-start-2 sm:row-start-1">
-                  <SelectPrimitive.Root
-                    value=""
-                    disabled={isSubmitting}
+                  <PopoverPrimitive.Root
+                    open={activeProductSearchRow === productSelection.row.row}
                     onOpenChange={(open) => {
                       setProductSearch("");
                       setActiveProductSearchRow(
@@ -707,114 +705,90 @@ export default function InvoiceOCR({
                       setCatalogProducts([]);
                       setCatalogSearchError(false);
                     }}
-                    onValueChange={(slug) => {
-                      const product = findInvoiceProductBySlug(
-                        slug,
-                        productSelection.candidates,
-                        catalogProducts,
-                      );
-                      if (product) {
-                        handleProductSelect(productSelection.row.row, product);
-                        setProductSearch("");
-                        setActiveProductSearchRow(null);
-                      }
-                    }}
                   >
-                    <SelectPrimitive.Trigger asChild>
+                    <PopoverPrimitive.Trigger asChild>
                       <Button
                         type="button"
                         variant="white"
                         size="sm"
                         autoFocus={index === 0}
+                        disabled={isSubmitting}
                         className="h-8 w-full min-w-0 justify-between gap-2 text-left"
                         aria-label={`${t("invoice_select_product", { row: productSelection.row.row })}: ${productSelection.row.description}`}
                       >
-                        <SelectPrimitive.Value
-                          className="min-w-0 truncate"
-                          placeholder={t("invoice_select_product", {
+                        <span className="min-w-0 truncate text-gray-500">
+                          {t("invoice_select_product", {
                             row: productSelection.row.row,
                           })}
-                        />
-                        <SelectPrimitive.Icon asChild>
-                          <ChevronDown className="text-gray-500" />
-                        </SelectPrimitive.Icon>
+                        </span>
+                        <ChevronDown className="text-gray-500" />
                       </Button>
-                    </SelectPrimitive.Trigger>
-                    <SelectPrimitive.Portal>
+                    </PopoverPrimitive.Trigger>
+                    <PopoverPrimitive.Portal>
                       <div className="care-ai-vision-container">
-                        <SelectPrimitive.Content
-                          position="popper"
+                        <PopoverPrimitive.Content
                           sideOffset={4}
-                          className="z-50 max-h-(--radix-select-content-available-height) w-(--radix-select-trigger-width) max-w-[calc(100vw-2rem)] overflow-hidden rounded-md border border-gray-200 bg-white text-gray-900 shadow-md"
+                          align="start"
+                          className="z-50 w-(--radix-popover-trigger-width) max-w-[calc(100vw-2rem)] overflow-hidden rounded-md border border-gray-200 bg-white text-gray-900 shadow-md"
                         >
                           <div className="border-b border-gray-200 p-2">
-                            <div className="flex h-9 items-center gap-2 rounded-md border border-gray-300 px-2">
-                              <Search className="size-4 shrink-0 text-gray-500" />
-                              <input
+                            <div className="relative">
+                              <Search className="pointer-events-none absolute left-2 top-1/2 size-4 -translate-y-1/2 text-gray-500" />
+                              <Input
                                 type="search"
-                                autoFocus
                                 value={productSearch}
                                 aria-label={t("invoice_search")}
                                 placeholder={t("invoice_search")}
-                                className="min-w-0 flex-1 bg-transparent text-base sm:text-sm outline-none placeholder:text-gray-500 border-0 ring-0"
+                                className="h-9 pl-8"
                                 onChange={(event) =>
                                   setProductSearch(event.target.value)
                                 }
-                                onKeyDown={(event) => {
-                                  if (
-                                    event.key.length === 1 &&
-                                    !event.ctrlKey &&
-                                    !event.metaKey &&
-                                    !event.altKey
-                                  ) {
-                                    event.stopPropagation();
-                                  }
-                                }}
                               />
                             </div>
                           </div>
-                          <SelectPrimitive.ScrollUpButton className="flex h-6 items-center justify-center">
-                            <ChevronUp className="size-4" />
-                          </SelectPrimitive.ScrollUpButton>
-                          <SelectPrimitive.Viewport className="max-h-64 p-1">
+                          <div className="max-h-64 overflow-y-auto p-1">
                             {getBestInvoiceProductMatches(
                               productSelection.candidates,
                               catalogProducts,
                               productSelection.row.description,
                             ).length > 0 && (
-                              <SelectPrimitive.Group>
-                                <SelectPrimitive.Label className="px-2 py-1 text-xs font-semibold text-gray-500">
+                              <div role="group">
+                                <p className="px-2 py-1 text-xs font-semibold text-gray-500">
                                   {t("invoice_best_matches")}
-                                </SelectPrimitive.Label>
+                                </p>
                                 {getBestInvoiceProductMatches(
                                   productSelection.candidates,
                                   catalogProducts,
                                   productSelection.row.description,
                                 ).map((product) => (
-                                  <SelectPrimitive.Item
+                                  <button
+                                    type="button"
                                     key={product.slug}
-                                    value={product.slug}
-                                    className="min-h-8 cursor-pointer rounded-sm px-2 py-1.5 text-sm outline-none data-highlighted:bg-blue-50 data-highlighted:text-blue-900"
+                                    className="min-h-8 w-full cursor-pointer rounded-sm px-2 py-1.5 text-left text-sm outline-none hover:bg-blue-50 hover:text-blue-900 focus-visible:bg-blue-50 focus-visible:text-blue-900"
+                                    onClick={() =>
+                                      selectCatalogProduct(
+                                        productSelection.row.row,
+                                        product,
+                                      )
+                                    }
                                   >
-                                    <SelectPrimitive.ItemText>
-                                      <span className="flex items-start justify-between gap-3">
-                                        <span className="min-w-0 wrap-break-word">
-                                          {product.name}
-                                        </span>
-                                        <span className="shrink-0 text-xs text-gray-500">
-                                          {t("invoice_product_match", {
-                                            percent: scoreInvoiceProduct(
-                                              product,
-                                              productSelection.row.description,
-                                              productSelection.row.hsnSac,
-                                            ),
-                                          })}
-                                        </span>
+                                    <span className="flex items-start justify-between gap-3">
+                                      <span className="min-w-0 wrap-break-word">
+                                        {product.name}
                                       </span>
-                                    </SelectPrimitive.ItemText>
-                                  </SelectPrimitive.Item>
+                                      <span className="shrink-0 text-xs text-gray-500">
+                                        {t("invoice_product_match", {
+                                          percent: scoreInvoiceProduct(
+                                            product,
+                                            productSelection.row.description,
+                                            productSelection.row.hsnSac,
+                                          ),
+                                        })}
+                                      </span>
+                                    </span>
+                                  </button>
                                 ))}
-                              </SelectPrimitive.Group>
+                              </div>
                             )}
                             {getBestInvoiceProductMatches(
                               productSelection.candidates,
@@ -830,10 +804,10 @@ export default function InvoiceOCR({
                                 </p>
                               )}
                             {productSearch.trim().length >= 2 && (
-                              <SelectPrimitive.Group>
-                                <SelectPrimitive.Label className="px-2 py-1 text-xs font-semibold text-gray-500">
+                              <div role="group">
+                                <p className="px-2 py-1 text-xs font-semibold text-gray-500">
                                   {t("invoice_search_results")}
-                                </SelectPrimitive.Label>
+                                </p>
                                 {getInvoiceCatalogSearchResults(
                                   catalogProducts,
                                   getBestInvoiceProductMatches(
@@ -842,19 +816,23 @@ export default function InvoiceOCR({
                                     productSelection.row.description,
                                   ),
                                 ).map((product) => (
-                                  <SelectPrimitive.Item
+                                  <button
+                                    type="button"
                                     key={product.slug}
-                                    value={product.slug}
-                                    className="min-h-8 cursor-pointer rounded-sm px-2 py-1.5 text-sm outline-none data-highlighted:bg-blue-50 data-highlighted:text-blue-900"
+                                    className="min-h-8 w-full cursor-pointer rounded-sm px-2 py-1.5 text-left text-sm outline-none hover:bg-blue-50 hover:text-blue-900 focus-visible:bg-blue-50 focus-visible:text-blue-900"
+                                    onClick={() =>
+                                      selectCatalogProduct(
+                                        productSelection.row.row,
+                                        product,
+                                      )
+                                    }
                                   >
-                                    <SelectPrimitive.ItemText>
-                                      <span className="min-w-0 wrap-break-word">
-                                        {product.name}
-                                      </span>
-                                    </SelectPrimitive.ItemText>
-                                  </SelectPrimitive.Item>
+                                    <span className="min-w-0 wrap-break-word">
+                                      {product.name}
+                                    </span>
+                                  </button>
                                 ))}
-                              </SelectPrimitive.Group>
+                              </div>
                             )}
                             {catalogSearchLoading && (
                               <p
@@ -883,14 +861,11 @@ export default function InvoiceOCR({
                                   {t("invoice_search_empty")}
                                 </p>
                               )}
-                          </SelectPrimitive.Viewport>
-                          <SelectPrimitive.ScrollDownButton className="flex h-6 items-center justify-center">
-                            <ChevronDown className="size-4" />
-                          </SelectPrimitive.ScrollDownButton>
-                        </SelectPrimitive.Content>
+                          </div>
+                        </PopoverPrimitive.Content>
                       </div>
-                    </SelectPrimitive.Portal>
-                  </SelectPrimitive.Root>
+                    </PopoverPrimitive.Portal>
+                  </PopoverPrimitive.Root>
                 </div>
                 <Button
                   type="button"
@@ -931,6 +906,36 @@ export default function InvoiceOCR({
             <p className="text-sm font-medium text-green-900">
               {t("invoice_filled", { count: filled })}
             </p>
+            {previews.length > 0 && (
+              <div className="ml-2 flex flex-wrap items-center gap-1.5">
+                {previews.map((item) => (
+                  <Button
+                    key={fileKey(item.file)}
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="size-8 min-w-8 overflow-hidden rounded-md border border-green-700/30 bg-white p-0"
+                    title={item.file.name}
+                    aria-label={item.file.name}
+                    onClick={() => {
+                      if (item.file.type.startsWith("image/")) setPreview(item);
+                      else
+                        window.open(item.url, "_blank", "noopener,noreferrer");
+                    }}
+                  >
+                    {item.file.type.startsWith("image/") ? (
+                      <img
+                        src={item.url}
+                        alt=""
+                        className="size-8 object-cover hover:opacity-80"
+                      />
+                    ) : (
+                      <FileText className="size-4 text-blue-600" />
+                    )}
+                  </Button>
+                ))}
+              </div>
+            )}
           </div>
           <div className="flex gap-2">
             <ButtonGroup className="md:hidden" aria-label={t("add_files")}>
