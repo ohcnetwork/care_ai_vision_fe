@@ -202,11 +202,19 @@ export async function resolveInvoiceRows(
       continue;
     }
 
-    let defaults = defaultsCache.get(product.slug);
-    if (!defaultsCache.has(product.slug)) {
+    // An existing batch with the invoice's batch number is reused, like picking it
+    // in care_fe's batch list; otherwise the latest batch seeds a new one.
+    const batch = row.batch.trim();
+    const defaultsKey = `${product.slug}\u0000${batch.toLowerCase()}`;
+    let defaults = defaultsCache.get(defaultsKey);
+    if (!defaultsCache.has(defaultsKey)) {
       try {
-        defaults = await fetchInvoiceProductDefaults(product, facilityId);
-        defaultsCache.set(product.slug, defaults);
+        defaults =
+          (batch
+            ? await fetchInvoiceProductDefaults(product, facilityId, batch)
+            : undefined) ??
+          (await fetchInvoiceProductDefaults(product, facilityId));
+        defaultsCache.set(defaultsKey, defaults);
       } catch {
         details.push(translate("invoice_product_defaults_missing"));
         attention.push("category", "price");
@@ -533,6 +541,7 @@ export async function fetchInvoiceExtensionConfig(): Promise<
 export async function fetchInvoiceProductDefaults(
   product: InvoiceProduct,
   facilityId: string,
+  batchNumber?: string,
 ): Promise<InvoiceBatchProduct | undefined> {
   const url = new URL(
     `/api/v1/facility/${encodeURIComponent(facilityId)}/product/`,
@@ -543,12 +552,22 @@ export async function fetchInvoiceProductDefaults(
     status: "active",
     ordering: "-created_date",
     limit: "1",
+    ...(batchNumber ? { batch_number: batchNumber } : {}),
   }).toString();
   const response = await fetch(url, { headers: getHeaders() });
   if (!response.ok)
     throw new Error(`Product defaults unavailable (${response.status})`);
   const data = (await response.json()) as { results: InvoiceBatchProduct[] };
   return data.results[0];
+}
+
+// care_fe stores expiry as local midnight serialised in UTC, so the calendar day
+// must be read in local time (slicing the string is a day early east of UTC).
+function localInvoiceDate(value?: string): string {
+  const date = value ? new Date(value) : undefined;
+  if (!date || Number.isNaN(date.getTime())) return "";
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
 export function prepareInvoiceItem(
@@ -636,9 +655,7 @@ export function prepareInvoiceItem(
 
   const charge = defaults.charge_item_definition;
   const components = charge?.price_components ?? [];
-  const defaultExpiry = normalizeInvoiceExpiry(
-    defaults.expiration_date?.slice(0, 10) ?? "",
-  );
+  const defaultExpiry = localInvoiceDate(defaults.expiration_date);
   const defaultBatch = defaults.batch?.lot_number ?? "";
   const defaultPrice =
     components.find((component) => component.monetary_component_type === "base")
@@ -692,6 +709,12 @@ export function prepareInvoiceItem(
     if (first == null || second == null) return first == null && second == null;
     return new Decimal(first).equals(second);
   };
+  const samePrice = (first?: string | null, second?: string | null) => {
+    if (first == null || second == null) return sameAmount(first, second);
+    // Stored prices are rounded; compare at their precision, not the 6-decimal derived value.
+    const places = second.split(".")[1]?.length ?? 0;
+    return new Decimal(first).toDecimalPlaces(places).equals(second);
+  };
   const sameComponents = (
     first: InvoiceMonetaryComponent[],
     second: InvoiceMonetaryComponent[],
@@ -710,12 +733,12 @@ export function prepareInvoiceItem(
   // care_fe copies the product's existing price components on save unless the
   // charge item is flagged as edited, which would drop imported tax/MRP values.
   item.is_charge_item_edited =
-    !sameAmount(item.unit_price, defaultPrice) ||
+    !samePrice(item.unit_price, defaultPrice) ||
     !sameComponents(item.tax_components, defaultTaxes) ||
     !sameComponents(item.discount_components, defaultDiscounts) ||
     !sameComponents(item.informational_components, defaultInformation);
   item.is_manually_edited =
-    item.batch_number !== defaultBatch ||
+    item.batch_number.toLowerCase() !== defaultBatch.toLowerCase() ||
     item.expiry_date !== defaultExpiry ||
     item.is_charge_item_edited;
   return item;
