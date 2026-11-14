@@ -103,6 +103,63 @@ export async function fillInvoiceRowsSequentially(
   return true;
 }
 
+/**
+ * Finds each field's cell in a delivery row. Extension fields add columns
+ * anywhere in the table, so fixed offsets drift; anchor on named inputs and the
+ * Sale/Purchase group headers instead, and ignore extension cells.
+ */
+function locateInvoiceColumns(
+  row: HTMLTableRowElement,
+  mark: InvoiceRowHighlight,
+): Partial<Record<InvoiceAttentionField, number>> {
+  const cells = Array.from(row.cells);
+  const extensionPrefix = `items.${mark.index}.extensions.`;
+  const isExtension = (cell: HTMLElement) =>
+    !!cell.querySelector(`[name^="${extensionPrefix}"]`);
+  const indexOfField = (name: string) =>
+    cells.findIndex(
+      (cell) => !!cell.querySelector(`[name="items.${mark.index}.${name}"]`),
+    );
+  const core = cells.flatMap((cell, index) =>
+    isExtension(cell) ? [] : [index],
+  );
+  const expiry = indexOfField("expiry_date");
+  const position = core.indexOf(expiry);
+  const columns: Partial<Record<InvoiceAttentionField, number>> = {
+    batch: core[position - 1],
+    expiry,
+    category: core[position + 1],
+    packSize: core[position + 2],
+    packQuantity: indexOfField("supplied_item_pack_quantity"),
+    quantity: indexOfField("supplied_item_quantity"),
+  };
+
+  // Header columns map 1:1 to row cells; Sale and Purchase are the two
+  // group headers that don't span both header rows.
+  const groups: { start: number; span: number }[] = [];
+  let start = 0;
+  for (const head of Array.from(
+    row.closest("table")?.tHead?.rows[0]?.cells ?? [],
+  )) {
+    if (head.rowSpan < 2) groups.push({ start, span: head.colSpan });
+    start += head.colSpan;
+  }
+  const [sale, purchase] = groups;
+  if (!sale || !purchase) return columns;
+
+  const informationCount = sale.span - 1;
+  columns.price = sale.start;
+  columns.mrp =
+    mark.mrpIndex != null &&
+    mark.mrpIndex >= 0 &&
+    mark.mrpIndex < informationCount
+      ? sale.start + 1 + mark.mrpIndex
+      : sale.start;
+  columns.purchaseTotal = purchase.start + 1;
+  columns.tax = core.find((index) => index > purchase.start + 1);
+  return columns;
+}
+
 export function markInvoiceRows(
   scope: HTMLElement,
   marks: InvoiceRowHighlight[],
@@ -191,30 +248,9 @@ export function markInvoiceRows(
       timers.push(
         setTimeout(() => row.classList.remove("invoice-ocr-filled"), 1800),
       );
-      const table = row.closest("table");
-      const informationCount = Math.max(
-        0,
-        (table?.tHead?.rows[1]?.cells.length ?? 3) - 3,
-      );
-      const column: Record<InvoiceAttentionField, number> = {
-        batch: 1,
-        expiry: 2,
-        category: 3,
-        packSize: 4,
-        packQuantity: 5,
-        quantity: 6,
-        price: 7,
-        mrp:
-          mark.mrpIndex != null &&
-          mark.mrpIndex >= 0 &&
-          mark.mrpIndex < informationCount
-            ? 8 + mark.mrpIndex
-            : 7,
-        purchaseTotal: 9 + informationCount,
-        tax: 10 + informationCount,
-      };
+      const column = locateInvoiceColumns(row, mark);
       for (const field of new Set(mark.attention)) {
-        const cell = row.cells[column[field]];
+        const cell = row.cells[column[field] ?? -1];
         if (!cell || fields.has(cell)) continue;
         fields.set(cell, {
           title: cell.getAttribute("title"),
