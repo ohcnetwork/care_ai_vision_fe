@@ -43,6 +43,21 @@
   transition: background-color 0.3s ease;
 }
 
+/* the raw <input> is borderless/transparent in some layouts (e.g. lab
+   observation fields) — pulse its wrapping label too so the whole box flashes */
+.ocr-fill-wrap:has(.ocr-field-highlight) {
+  animation: ocr-field-pulse 0.6s ease-in-out 2;
+  border-radius: 0.5rem;
+  outline: 2px solid rgba(37, 99, 235, 0.55);
+  outline-offset: 2px;
+}
+
+/* wrap already shows the pulse above — don't also outline the tiny inner input */
+.ocr-fill-wrap .ocr-field-highlight {
+  animation: none;
+  outline: none;
+}
+
 .ocr-fill-wrap {
   position: relative;
 }
