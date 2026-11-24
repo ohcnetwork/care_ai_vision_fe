@@ -4,6 +4,7 @@ const AIVisionSettings = lazy(() => import("./pages/AIVisionSettings"));
 
 const routes = {
   "/facility/:facilityId/users/:user/ai-vision": () => <AIVisionSettings />,
+  "/users/:user/ai-vision": () => <AIVisionSettings />,
 };
 
 export default routes;

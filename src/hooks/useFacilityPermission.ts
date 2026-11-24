@@ -33,6 +33,7 @@ export function useHasFacilityPermission(permission: string) {
   });
 
   return {
+    hasFacility: Boolean(facilityId),
     hasPermission: Boolean(data?.permissions?.includes(permission)),
     isLoading: !!facilityId && isLoading,
   };

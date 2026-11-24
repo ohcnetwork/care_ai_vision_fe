@@ -6,5 +6,9 @@
 export function resolveFacilityIdFromPath(): string | undefined {
   if (typeof window === "undefined") return undefined;
   const segments = window.location.pathname.split("/");
-  return segments[1] === "facility" ? segments[2] || undefined : undefined;
+  if (segments[1] !== "facility") return undefined;
+  const facilityId = segments[2];
+  return facilityId && facilityId !== "undefined" && facilityId !== "null"
+    ? facilityId
+    : undefined;
 }

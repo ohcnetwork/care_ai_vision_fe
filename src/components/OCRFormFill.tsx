@@ -10,6 +10,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { useAiVisionEnabled } from "@/hooks/useAiVisionEnabled";
+import { useAiVisionFillSpeed } from "@/hooks/useAiVisionFillSpeed";
 import useAuthUser from "@/hooks/useAuthUser";
 import { useDraggableFab } from "@/hooks/useDraggableFab";
 import { useTranslation } from "@/hooks/useTranslation";
@@ -25,8 +26,6 @@ import {
 } from "@/lib/ocr";
 
 type Status = "idle" | "processing" | "filling" | "success" | "error";
-
-const FIELD_FILL_DELAY_MS = 350;
 
 interface FormLike {
   setValue: (
@@ -58,6 +57,7 @@ export default function OCRFormFill({
   const { t } = useTranslation();
   const user = useAuthUser();
   const { enabled } = useAiVisionEnabled();
+  const { fillDelayMs } = useAiVisionFillSpeed();
 
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState("");
@@ -249,11 +249,11 @@ export default function OCRFormFill({
             form.clearErrors?.();
             setStatus("success");
           }
-        }, index * FIELD_FILL_DELAY_MS);
+        }, index * fillDelayMs);
         fillTimeoutsRef.current.push(timeoutId);
       });
     },
-    [form],
+    [fillDelayMs, form],
   );
 
   const processImage = useCallback(

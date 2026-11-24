@@ -20,8 +20,8 @@ import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
 import { Input } from "@/components/ui/input";
 import { MatrixSpinner } from "@/components/ui/matrix-spinner";
-import { useAiVisionAnimateFill } from "@/hooks/useAiVisionAnimateFill";
 import { useAiVisionEnabled } from "@/hooks/useAiVisionEnabled";
+import { useAiVisionFillSpeed } from "@/hooks/useAiVisionFillSpeed";
 import { useTranslation } from "@/hooks/useTranslation";
 import {
   buildInvoiceFields,
@@ -121,7 +121,7 @@ export default function InvoiceOCR({
 }: Props) {
   const { t } = useTranslation();
   const { enabled } = useAiVisionEnabled();
-  const { animateFill } = useAiVisionAnimateFill();
+  const { fillDelayMs } = useAiVisionFillSpeed();
   const [files, setFiles] = useState<File[]>([]);
   const [previews, setPreviews] = useState<QueuedFile[]>([]);
   const [preview, setPreview] = useState<QueuedFile | null>(null);
@@ -423,7 +423,7 @@ export default function InvoiceOCR({
             setFilled(mark.index - current.length + 1);
           },
           () => run !== generation.current || form.formState.isSubmitting,
-          animateFill,
+          fillDelayMs,
         );
         if (!completed) return;
       } else {

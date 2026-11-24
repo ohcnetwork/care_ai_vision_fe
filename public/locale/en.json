@@ -105,6 +105,9 @@
   "invoice_notes": "Invoice notes",
   "invoice_receipt_review": "Receipt rows to review",
   "invoice_extension_config_missing": "Extension settings could not be loaded. Review the additional receipt fields.",
-  "animate_row_filling": "Animate invoice row filling",
-  "animate_row_filling_description": "Fill invoice rows one by one with a highlight. When off, all rows fill at once."
+  "field_filling_speed": "Field filling speed",
+  "field_filling_speed_description": "Choose the delay between fields filled by AI Vision. Instant removes the delay; Fast waits 100 ms and Normal waits 500 ms between fields.",
+  "instant": "Instant",
+  "fast_100_ms": "Fast (100 ms)",
+  "normal_500_ms": "Normal (500 ms)"
 }

@@ -3,9 +3,12 @@ import { atom } from "jotai";
 import { atomWithStorage, createJSONStorage } from "jotai/utils";
 
 const STORAGE_KEY_PREFIX = "care_ai_vision.enabled";
-const ANIMATE_FILL_KEY_PREFIX = "care_ai_vision.animate_fill";
+const FILL_SPEED_KEY_PREFIX = "care_ai_vision.fill_speed";
+const LEGACY_ANIMATE_FILL_KEY_PREFIX = "care_ai_vision.animate_fill";
 const PREFERENCE_KEY = "care_ai_vision";
 const PREFERENCE_VERSION = "1.0";
+
+export type AiVisionFillSpeed = "instant" | "fast" | "normal";
 
 /**
  * Local atom backed by localStorage — used as a per-device cache.
@@ -20,11 +23,27 @@ export function aiVisionEnabledAtomFor(userId: string) {
   );
 }
 
-/** Per-device preference for animating invoice rows as they are filled. */
-export function aiVisionAnimateFillAtomFor(userId: string) {
-  return atomWithStorage<boolean>(
-    `${ANIMATE_FILL_KEY_PREFIX}.${userId}`,
-    false,
+function initialAiVisionFillSpeed(userId: string): AiVisionFillSpeed {
+  if (typeof window === "undefined") return "instant";
+
+  const savedSpeed = window.localStorage.getItem(
+    `${FILL_SPEED_KEY_PREFIX}.${userId}`,
+  );
+  if (savedSpeed === '"instant"') return "instant";
+  if (savedSpeed === '"fast"') return "fast";
+  if (savedSpeed === '"normal"') return "normal";
+
+  const legacyAnimateFill = window.localStorage.getItem(
+    `${LEGACY_ANIMATE_FILL_KEY_PREFIX}.${userId}`,
+  );
+  return legacyAnimateFill === "true" ? "normal" : "instant";
+}
+
+/** Per-device preference for fill timing across AI Vision forms. */
+export function aiVisionFillSpeedAtomFor(userId: string) {
+  return atomWithStorage<AiVisionFillSpeed>(
+    `${FILL_SPEED_KEY_PREFIX}.${userId}`,
+    initialAiVisionFillSpeed(userId),
     createJSONStorage(() => localStorage),
   );
 }

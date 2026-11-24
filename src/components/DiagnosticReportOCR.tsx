@@ -17,6 +17,7 @@ import { MatrixSpinner } from "@/components/ui/matrix-spinner";
 import { PixelSpinner } from "@/components/ui/pixel-spinner";
 
 import { useAiVisionEnabled } from "@/hooks/useAiVisionEnabled";
+import { useAiVisionFillSpeed } from "@/hooks/useAiVisionFillSpeed";
 import { useTranslation } from "@/hooks/useTranslation";
 import { resolveFacilityIdFromPath } from "@/lib/facility";
 import {
@@ -35,7 +36,6 @@ import { resolveDiagnosticReportContext } from "@/lib/service-request";
 
 type Status = "idle" | "processing" | "filling" | "success" | "error";
 
-const FIELD_FILL_DELAY_MS = 350;
 const EXTRACTION_MESSAGE_KEYS = [
   "extracting_information",
   "autofilling_fields",
@@ -187,6 +187,7 @@ export default function DiagnosticReportOCR({
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { enabled } = useAiVisionEnabled();
+  const { fillDelayMs } = useAiVisionFillSpeed();
 
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState("");
@@ -309,10 +310,10 @@ export default function DiagnosticReportOCR({
         step.apply();
         requestAnimationFrame(() => step.highlight());
         if (index === steps.length - 1) setStatus("success");
-      }, index * FIELD_FILL_DELAY_MS);
+      }, index * fillDelayMs);
       fillTimeoutsRef.current.push(timeoutId);
     });
-  }, []);
+  }, [fillDelayMs]);
 
   const appendFiles = useCallback(
     (files: File[]) => {

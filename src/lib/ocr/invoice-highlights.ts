@@ -55,7 +55,7 @@ export async function fillInvoiceRowsSequentially(
   fillRow: (index: number) => void,
   onFilled: (mark: InvoiceRowHighlight) => void,
   isCancelled: () => boolean,
-  animate = true,
+  delayMs: number,
 ): Promise<boolean> {
   const nextFrame = () =>
     new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
@@ -63,19 +63,17 @@ export async function fillInvoiceRowsSequentially(
     "(prefers-reduced-motion: reduce)",
   ).matches;
   const pause = (milliseconds: number) =>
-    new Promise<void>((resolve) =>
-      setTimeout(resolve, reducedMotion ? 0 : milliseconds),
-    );
+    new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
   await nextFrame();
   await nextFrame();
-  if (!animate) {
+  if (delayMs === 0) {
     if (isCancelled()) return false;
     for (const mark of marks) fillRow(mark.index);
     await nextFrame();
     for (const mark of marks) onFilled(mark);
     return true;
   }
-  for (const mark of marks) {
+  for (const [index, mark] of marks.entries()) {
     if (isCancelled()) return false;
     const row = scope
       .querySelector<HTMLInputElement>(
@@ -90,12 +88,12 @@ export async function fillInvoiceRowsSequentially(
       inline: "nearest",
     });
     try {
-      await pause(150);
-      if (isCancelled()) return false;
       fillRow(mark.index);
       await nextFrame();
       onFilled(mark);
-      await pause(500);
+      if (index < marks.length - 1) {
+        await pause(delayMs);
+      }
     } finally {
       row.classList.remove("invoice-ocr-active");
     }
