@@ -149,6 +149,18 @@ function labFieldKey(
   return `${definition.id}::${kind}::${componentCode ?? ""}`;
 }
 
+function findObservationCard(heading: string): HTMLElement | null {
+  const groups = document.querySelectorAll<HTMLElement>(
+    '[role="group"][aria-labelledby]',
+  );
+  for (const group of groups) {
+    const labelledBy = group.getAttribute("aria-labelledby");
+    const titleEl = labelledBy ? document.getElementById(labelledBy) : null;
+    if (titleEl?.textContent?.trim() === heading) return group;
+  }
+  return null;
+}
+
 export function findLabObservationElement(
   definition: LabHighlightDef,
   kind: "value" | "unit",
@@ -158,29 +170,20 @@ export function findLabObservationElement(
     definition.title || definition.code?.display || definition.code?.code;
   if (!heading) return null;
 
-  const headingLabel = [...document.querySelectorAll("label")].find(
-    (label) => label.textContent?.trim() === heading,
-  );
-  const card = headingLabel?.closest(".rounded-lg") as HTMLElement | null;
+  const card = findObservationCard(heading);
   if (!card) return null;
 
   let scope: ParentNode = card;
   if (componentCode) {
-    const componentIndex =
-      definition.component?.findIndex((c) => c.code.code === componentCode) ??
-      -1;
-    const comp =
-      componentIndex >= 0 ? definition.component?.[componentIndex] : undefined;
+    const comp = definition.component?.find(
+      (c) => c.code.code === componentCode,
+    );
     const name = comp?.code.display || comp?.code.code || componentCode;
 
-    const candidates = [...card.querySelectorAll("label")].filter(
-      (label) => label !== headingLabel,
-    );
+    const candidates = [...card.querySelectorAll("label")];
     const compLabel =
-      candidates.find(
-        (label) =>
-          label.textContent?.trim() === `${componentIndex + 1}. ${name}`,
-      ) ?? candidates.find((label) => (label.textContent || "").includes(name));
+      candidates.find((label) => label.textContent?.trim() === name) ??
+      candidates.find((label) => (label.textContent || "").includes(name));
     if (compLabel?.parentElement) scope = compLabel.parentElement;
   }
 
@@ -241,7 +244,7 @@ function decorate(
   const inputRect = el.getBoundingClientRect();
   const parentRect = parent.getBoundingClientRect();
   badge.style.top = `${inputRect.top - parentRect.top + inputRect.height / 2}px`;
-  badge.style.right = `${parentRect.right - inputRect.right + 8}px`;
+  badge.style.right = "8px";
 }
 
 function onMarkedInput(event: Event): void {
