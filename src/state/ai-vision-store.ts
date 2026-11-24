@@ -3,6 +3,7 @@ import { atom } from "jotai";
 import { atomWithStorage, createJSONStorage } from "jotai/utils";
 
 const STORAGE_KEY_PREFIX = "care_ai_vision.enabled";
+const ANIMATE_FILL_KEY_PREFIX = "care_ai_vision.animate_fill";
 const PREFERENCE_KEY = "care_ai_vision";
 const PREFERENCE_VERSION = "1.0";
 
@@ -14,6 +15,15 @@ const PREFERENCE_VERSION = "1.0";
 export function aiVisionEnabledAtomFor(userId: string) {
   return atomWithStorage<boolean>(
     `${STORAGE_KEY_PREFIX}.${userId}`,
+    false,
+    createJSONStorage(() => localStorage),
+  );
+}
+
+/** Per-device preference for animating invoice rows as they are filled. */
+export function aiVisionAnimateFillAtomFor(userId: string) {
+  return atomWithStorage<boolean>(
+    `${ANIMATE_FILL_KEY_PREFIX}.${userId}`,
     false,
     createJSONStorage(() => localStorage),
   );

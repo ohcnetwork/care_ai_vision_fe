@@ -12,6 +12,7 @@ const manifest = {
     DiagnosticReportOverride: lazy(
       () => import("./components/DiagnosticReportOCR"),
     ),
+    SupplyDeliveryFormActions: lazy(() => import("./components/InvoiceOCR")),
   },
   userNavItems: [
     {
