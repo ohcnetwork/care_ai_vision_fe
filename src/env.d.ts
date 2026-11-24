@@ -1,5 +1,6 @@
 interface ImportMetaEnv {
-  readonly REACT_APP_GEMINI_API_KEY: string;
+  readonly REACT_MEDISPEAK_API_URL: string;
+  readonly REACT_LOW_CONFIDENCE_THRESHOLD?: string;
 }
 
 interface ImportMeta {

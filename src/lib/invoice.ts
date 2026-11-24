@@ -1,0 +1,1082 @@
+import Decimal from "decimal.js";
+
+import type { MedispeakFieldSpec } from "@/lib/ocr/medispeak";
+import type { InvoiceAttentionField } from "@/lib/ocr/invoice-highlights";
+import { getHeaders } from "@/lib/request";
+
+export interface InvoiceProduct {
+  id: string;
+  slug: string;
+  name: string;
+  alternate_identifier?: string;
+  names?: { name: string }[];
+  code?: { code: string; display?: string; system?: string };
+  base_unit: { code: string; display?: string; system?: string };
+}
+
+export interface InvoiceRow {
+  row: number;
+  description: string;
+  hsnSac?: string;
+  batch: string;
+  expiry: string;
+  quantity: string;
+  freeQuantity: string;
+  packSize: string;
+  unit: string;
+  mrp?: string;
+  sellingPrice?: string;
+  totalPurchasePrice?: string;
+  cgstRate?: string;
+  sgstRate?: string;
+  igstRate?: string;
+  gstRate?: string;
+}
+
+interface InvoiceMonetaryCode {
+  code: string;
+  display?: string;
+  system?: string;
+}
+
+export interface InvoiceMonetaryComponent {
+  monetary_component_type: "base" | "tax" | "discount" | "informational";
+  code?: InvoiceMonetaryCode;
+  factor?: string | null;
+  amount?: string | null;
+  title?: string;
+}
+
+export interface InvoiceMonetaryConfig {
+  instance_tax_monetary_components?: InvoiceMonetaryComponent[];
+  instance_informational_codes?: InvoiceMonetaryCode[];
+  instance_discount_monetary_components?: InvoiceMonetaryComponent[];
+  discount_monetary_components?: InvoiceMonetaryComponent[];
+  supply_delivery_extension?: {
+    free_quantity?: boolean;
+  };
+}
+
+export interface InvoiceDraft {
+  rows: InvoiceRow[];
+  errors: number[];
+  rowCount: number | null;
+}
+
+export interface ImportedInvoiceItem {
+  product_knowledge: InvoiceProduct;
+  supplied_item?: InvoiceBatchProduct;
+  charge_item_definition?: { slug: string };
+  charge_item_category?: string;
+  supplied_item_quantity: string;
+  supplied_item_pack_quantity?: number;
+  supplied_item_pack_size?: number;
+  batch_number: string;
+  expiry_date: string;
+  unit_price?: string;
+  total_purchase_price?: string;
+  is_total_purchase_price_edited?: boolean;
+  is_charge_item_edited?: boolean;
+  informational_components?: InvoiceMonetaryComponent[];
+  tax_components?: InvoiceMonetaryComponent[];
+  discount_components?: InvoiceMonetaryComponent[];
+  _is_inward_stock: boolean;
+  is_manually_edited: boolean;
+  is_tax_inclusive: boolean;
+  extensions: Record<string, unknown>;
+}
+
+export interface InvoiceBatchProduct {
+  id: string;
+  batch?: { lot_number?: string };
+  expiration_date?: string;
+  purchase_price?: string;
+  charge_item_definition?: {
+    slug: string;
+    category?: { slug: string };
+    price_components?: InvoiceMonetaryComponent[];
+  };
+}
+
+export interface InvoiceRowIssue {
+  offset: number;
+  description: string;
+  details: string[];
+  attention: InvoiceAttentionField[];
+}
+
+export async function resolveInvoiceRows(
+  rows: InvoiceRow[],
+  facilityId: string,
+  monetaryConfig: InvoiceMonetaryConfig,
+  {
+    translate,
+    onRow,
+    isCancelled,
+    selectProduct,
+  }: {
+    translate: (
+      key: string,
+      values?: Record<string, string | number>,
+    ) => string;
+    onRow: (row: number) => void;
+    isCancelled: () => boolean;
+    selectProduct: (
+      row: InvoiceRow,
+      candidates: InvoiceProduct[],
+    ) => Promise<InvoiceProduct | undefined>;
+  },
+): Promise<
+  | {
+      items: ImportedInvoiceItem[];
+      unmatched: string[];
+      issues: InvoiceRowIssue[];
+    }
+  | undefined
+> {
+  const items: ImportedInvoiceItem[] = [];
+  const unmatched: string[] = [];
+  const issues: InvoiceRowIssue[] = [];
+  const productsCache = new Map<string, InvoiceProduct[]>();
+  const defaultsCache = new Map<string, InvoiceBatchProduct | undefined>();
+  const selections: {
+    row: InvoiceRow;
+    matches: InvoiceProduct[];
+    product: Promise<InvoiceProduct | undefined>;
+    searchFailed: boolean;
+  }[] = [];
+
+  for (const row of rows) {
+    if (isCancelled()) return;
+    onRow(row.row);
+    let searchFailed = false;
+    const cacheKey = `${row.description}\u0000${row.hsnSac ?? ""}`;
+    let candidates = productsCache.get(cacheKey);
+    if (!candidates) {
+      try {
+        candidates = await searchInvoiceProducts(
+          row.description,
+          facilityId,
+          row.hsnSac,
+        );
+      } catch {
+        candidates = [];
+        searchFailed = true;
+      }
+      productsCache.set(cacheKey, candidates);
+    }
+    if (isCancelled()) return;
+    const matches = getInvoiceProductMatches(
+      candidates,
+      row.description,
+      row.hsnSac,
+    );
+    const exact = matchInvoiceProduct(matches, row.description);
+    selections.push({
+      row,
+      matches,
+      product: exact ? Promise.resolve(exact) : selectProduct(row, matches),
+      searchFailed,
+    });
+  }
+
+  for (const selection of selections) {
+    if (isCancelled()) return;
+    const { row, matches, searchFailed } = selection;
+    const product = await selection.product;
+    if (isCancelled()) return;
+    const details: string[] = searchFailed
+      ? [translate("invoice_search_failed")]
+      : [];
+    const attention: InvoiceAttentionField[] = [];
+    if (!product) {
+      unmatched.push(
+        translate(
+          matches.length > 0 ? "invoice_row_skipped" : "invoice_unmatched",
+          {
+            description: row.description,
+            row: row.row,
+          },
+        ),
+      );
+      continue;
+    }
+
+    // An existing batch with the invoice's batch number is reused, like picking it
+    // in care_fe's batch list; otherwise the latest batch seeds a new one.
+    const batch = row.batch.trim();
+    const defaultsKey = `${product.slug}\u0000${batch.toLowerCase()}`;
+    let defaults = defaultsCache.get(defaultsKey);
+    if (!defaultsCache.has(defaultsKey)) {
+      try {
+        defaults =
+          (batch
+            ? await fetchInvoiceProductDefaults(product, facilityId, batch)
+            : undefined) ??
+          (await fetchInvoiceProductDefaults(product, facilityId));
+        defaultsCache.set(defaultsKey, defaults);
+      } catch {
+        details.push(translate("invoice_product_defaults_missing"));
+        attention.push("category", "price");
+      }
+    }
+    if (isCancelled()) return;
+    const item = prepareInvoiceItem(row, product, monetaryConfig, defaults);
+    if (row.expiry && !normalizeInvoiceExpiry(row.expiry)) {
+      attention.push("expiry");
+      details.push(translate("invoice_expiry_required", { value: row.expiry }));
+    }
+    if (invoiceTaxNeedsReview(row, monetaryConfig)) {
+      attention.push("tax");
+      details.push(translate("invoice_tax_review"));
+    }
+    if (!item.batch_number) {
+      attention.push("batch");
+      details.push(translate("invoice_batch_required"));
+    }
+    if (!item.expiry_date && !row.expiry) {
+      attention.push("expiry");
+      details.push(translate("invoice_expiry_required", { value: "?" }));
+    }
+    if (!item.charge_item_category) attention.push("category");
+    if (item.unit_price == null) attention.push("price");
+    if (
+      !item.supplied_item_pack_quantity ||
+      item.supplied_item_pack_quantity < 0
+    )
+      attention.push("packQuantity");
+    if (!item.supplied_item_pack_size || item.supplied_item_pack_size < 0)
+      attention.push("packSize");
+    if (
+      row.mrp &&
+      !item.informational_components?.some(
+        (component) => component.code?.code === "mrp",
+      )
+    ) {
+      attention.push("mrp");
+      details.push(translate("invoice_mrp_review", { value: row.mrp }));
+    }
+    items.push(item);
+    issues.push({
+      offset: items.length - 1,
+      description: row.description,
+      details,
+      attention,
+    });
+  }
+  return { items, unmatched, issues };
+}
+
+const INVOICE_ROW_EXTRACTION_RULES =
+  "Extract only goods rows from the current invoice line-item tables. Ignore pending-bill ledgers, previous invoices, balance summaries, tax summaries, headers and subtotals. Include separate rows or batches even when descriptions match, in document order across all unique invoice pages. Capture each row's HSN/SAC exactly when readable; never substitute a GST rate or another row's code. Preserve medicine brand, strength and dosage form in description. quantity is the paid/billed pack count only. free_quantity is the count of extra free, bonus or scheme packs, in packs; do not treat it as a percentage or discount. Ignore any discount column or discount percentage on the invoice; do not return it. The received pack count is quantity plus free_quantity. Read free_quantity from the Free, Bonus or Scheme quantity column when it contains a count. Read pack_size from the Pack column as the numeric count of base units per billed pack; normalize count notation such as 10's to 10. Return null for volume/strength labels such as 2.5 ML unless a count of base units is explicitly printed. Preserve expiry as printed, including month/year. mrp is per billed pack, not a row total. total_purchase_price is the TPR: the supplier's price for ONE billed pack (one strip, vial or unit as billed), read from the Trade Price, PTR, PTS, List Price, Rate or Unit Price column before tax and discount. It is never the row Amount, Taxable Value, Net Value or line total, and never the MRP. When the row has no such column, return null. selling_price is only an explicitly labelled hospital resale price per base unit, never supplier Rate/SP. Tax fields are percentages, not rupee amounts. gst_rate is combined GST only when explicitly printed; do not invent CGST/SGST splits. Use strings or null for item values.";
+
+export function buildInvoiceFields(): MedispeakFieldSpec[] {
+  return [
+    {
+      key: "invoice_rows",
+      label: "Invoice goods rows",
+      type: "string",
+      description: `Return one JSON object as a string with keys row_count and rows. row_count is the number of goods rows. rows is an array containing only rows present in the invoice; do not add empty placeholders. Each row must be an object with keys description, hsn_sac, batch, expiry, quantity, free_quantity, pack_size, unit, mrp, selling_price, total_purchase_price, cgst_rate, sgst_rate, igst_rate, gst_rate. ${INVOICE_ROW_EXTRACTION_RULES}`,
+    },
+  ];
+}
+
+function text(value: unknown): string {
+  return typeof value === "string" || typeof value === "number"
+    ? String(value).trim()
+    : "";
+}
+
+function unwrap(value: unknown): unknown {
+  if (value && typeof value === "object" && "value" in value) {
+    return (value as { value: unknown }).value;
+  }
+  return value;
+}
+
+export function parseInvoiceResult(
+  result: Record<string, unknown>,
+): InvoiceDraft {
+  const rows: InvoiceRow[] = [];
+  const errors: number[] = [];
+  let output: unknown;
+  try {
+    const raw = unwrap(result.invoice_rows);
+    output = typeof raw === "string" ? JSON.parse(raw) : raw;
+  } catch {
+    return { rows, errors: [1], rowCount: null };
+  }
+  if (!output || typeof output !== "object" || Array.isArray(output)) {
+    return { rows, errors: [1], rowCount: null };
+  }
+  const fields = output as Record<string, unknown>;
+  let extractedRows = unwrap(fields.rows);
+  if (typeof extractedRows === "string") {
+    try {
+      extractedRows = JSON.parse(extractedRows);
+    } catch {
+      extractedRows = null;
+    }
+  }
+  if (!Array.isArray(extractedRows)) {
+    const count = Number(text(unwrap(fields.row_count)) || NaN);
+    return {
+      rows,
+      errors: [1],
+      rowCount: Number.isSafeInteger(count) && count >= 0 ? count : null,
+    };
+  }
+  extractedRows.forEach((raw, index) => {
+    try {
+      const value: unknown = typeof raw === "string" ? JSON.parse(raw) : raw;
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("Invalid invoice row");
+      }
+      const row = value as Record<string, unknown>;
+      if (!text(row.description)) throw new Error("Missing description");
+      rows.push({
+        row: index + 1,
+        description: text(row.description),
+        hsnSac: text(row.hsn_sac),
+        batch: text(row.batch),
+        expiry: text(row.expiry),
+        quantity: text(row.quantity),
+        freeQuantity: text(row.free_quantity),
+        packSize: text(row.pack_size),
+        unit: text(row.unit),
+        mrp: text(row.mrp),
+        sellingPrice: text(row.selling_price),
+        totalPurchasePrice: text(row.total_purchase_price),
+        cgstRate: text(row.cgst_rate),
+        sgstRate: text(row.sgst_rate),
+        igstRate: text(row.igst_rate),
+        gstRate: text(row.gst_rate),
+      });
+    } catch {
+      errors.push(index + 1);
+    }
+  });
+  const count = Number(text(unwrap(fields.row_count)) || NaN);
+  return {
+    rows,
+    errors,
+    rowCount: Number.isSafeInteger(count) && count >= 0 ? count : null,
+  };
+}
+
+export function isValidInvoiceDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00Z`);
+  return (
+    Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value
+  );
+}
+
+export function normalizeInvoiceExpiry(value: string): string {
+  const cleaned = value.trim().toLowerCase().replace(/\./g, "");
+  if (isValidInvoiceDate(cleaned)) return cleaned;
+  const months: Record<string, number> = {
+    jan: 1,
+    january: 1,
+    feb: 2,
+    february: 2,
+    mar: 3,
+    march: 3,
+    apr: 4,
+    april: 4,
+    may: 5,
+    jun: 6,
+    june: 6,
+    jul: 7,
+    july: 7,
+    aug: 8,
+    august: 8,
+    sep: 9,
+    sept: 9,
+    september: 9,
+    oct: 10,
+    october: 10,
+    nov: 11,
+    november: 11,
+    dec: 12,
+    december: 12,
+  };
+  const named = cleaned.match(
+    /^(?:(\d{1,2})[\s/-]+)?([a-z]+)[\s/-]+(\d{4}|\d{2})$/,
+  );
+  const monthYear = cleaned.match(/^(\d{1,2})[/-](\d{4}|\d{2})$/);
+  const yearMonth = cleaned.match(/^(\d{4})[/-](\d{1,2})$/);
+  const fullDate = cleaned.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+  const month = named
+    ? months[named[2]]
+    : Number(monthYear?.[1] ?? yearMonth?.[2] ?? fullDate?.[2]);
+  const rawYear =
+    named?.[3] ?? monthYear?.[2] ?? yearMonth?.[1] ?? fullDate?.[3];
+  if (!rawYear || !month || month < 1 || month > 12) return "";
+  const year = Number(rawYear) + (rawYear.length === 2 ? 2000 : 0);
+  if (year < 1900 || year > 9999) return "";
+  const day = Number(
+    named?.[1] ??
+      fullDate?.[1] ??
+      new Date(Date.UTC(year, month, 0)).getUTCDate(),
+  );
+  const result = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  return isValidInvoiceDate(result) ? result : "";
+}
+
+function integer(value: string, minimum: number): number | null {
+  if (!/^\d+$/.test(value.trim())) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= minimum ? parsed : null;
+}
+
+function invoicePackSize(value: string): number | null {
+  const match = value
+    .trim()
+    .match(/^(\d+)\s*(?:['’]s|s|tablets?|tabs?|capsules?|caps?|units?)?$/i);
+  return match ? integer(match[1], 1) : null;
+}
+
+export function invoiceDecimal(value?: string): string | undefined {
+  if (!value?.trim()) return undefined;
+  const cleaned = value
+    .trim()
+    .replace(/^(?:rs\.?|inr|\u20b9)\s*/i, "")
+    .replace(/%$/, "")
+    .replace(/,/g, "")
+    .trim();
+  if (!/^\d+(?:\.\d+)?$/.test(cleaned)) return undefined;
+  return new Decimal(cleaned).toFixed(6).replace(/\.?0+$/, "") || "0";
+}
+
+export function invoiceTaxComponents(
+  row: InvoiceRow,
+  config: InvoiceMonetaryConfig,
+): InvoiceMonetaryComponent[] {
+  const selected: InvoiceMonetaryComponent[] = [];
+  for (const [code, raw] of [
+    ["cgst", row.cgstRate],
+    ["sgst", row.sgstRate],
+    ["igst", row.igstRate],
+  ] as const) {
+    const rate = invoiceDecimal(raw);
+    if (rate == null || new Decimal(rate).isZero()) continue;
+    const component = config.instance_tax_monetary_components?.find(
+      (item) =>
+        item.monetary_component_type === "tax" &&
+        item.code?.code.toLowerCase() === code &&
+        item.factor != null &&
+        new Decimal(item.factor).equals(rate),
+    );
+    if (component) selected.push(component);
+  }
+  return selected;
+}
+
+export function invoiceTaxNeedsReview(
+  row: InvoiceRow,
+  config: InvoiceMonetaryConfig,
+): boolean {
+  const components = invoiceTaxComponents(row, config);
+  const printed = [row.cgstRate, row.sgstRate, row.igstRate]
+    .map(invoiceDecimal)
+    .filter(
+      (rate): rate is string => rate != null && !new Decimal(rate).isZero(),
+    );
+  const combined = invoiceDecimal(row.gstRate);
+  const selectedRate = components.reduce(
+    (total, item) => total.plus(item.factor ?? "0"),
+    new Decimal(0),
+  );
+  return (
+    printed.length !== components.length ||
+    (combined != null && !selectedRate.equals(combined))
+  );
+}
+
+export async function fetchInvoiceMonetaryConfig(
+  facilityId: string,
+): Promise<InvoiceMonetaryConfig> {
+  const response = await fetch(
+    new URL(
+      `/api/v1/facility/${encodeURIComponent(facilityId)}/`,
+      window.CARE_API_URL,
+    ),
+    { headers: getHeaders() },
+  );
+  if (!response.ok)
+    throw new Error(
+      `Facility monetary configuration unavailable (${response.status})`,
+    );
+  return response.json() as Promise<InvoiceMonetaryConfig>;
+}
+
+export async function fetchInvoiceExtensionConfig(): Promise<
+  Pick<InvoiceMonetaryConfig, "supply_delivery_extension">
+> {
+  const response = await fetch(
+    new URL("/api/v1/extensions/", window.CARE_API_URL),
+    { headers: getHeaders() },
+  );
+  if (!response.ok)
+    throw new Error(`Extension configuration unavailable (${response.status})`);
+  const registry = (await response.json()) as {
+    supply_delivery?: {
+      name: string;
+      write_schema?: { properties?: Record<string, { type?: string }> };
+    }[];
+  };
+  const extension = registry.supply_delivery?.find(
+    (entry) => entry.name === "supply_delivery_extension",
+  );
+  if (!extension) return {};
+  return {
+    supply_delivery_extension: {
+      free_quantity:
+        extension.write_schema?.properties?.free_quantity?.type === "integer",
+    },
+  };
+}
+
+export async function fetchInvoiceProductDefaults(
+  product: InvoiceProduct,
+  facilityId: string,
+  batchNumber?: string,
+): Promise<InvoiceBatchProduct | undefined> {
+  const url = new URL(
+    `/api/v1/facility/${encodeURIComponent(facilityId)}/product/`,
+    window.CARE_API_URL,
+  );
+  url.search = new URLSearchParams({
+    product_knowledge: product.slug,
+    status: "active",
+    ordering: "-created_date",
+    limit: "1",
+    ...(batchNumber ? { batch_number: batchNumber } : {}),
+  }).toString();
+  const response = await fetch(url, { headers: getHeaders() });
+  if (!response.ok)
+    throw new Error(`Product defaults unavailable (${response.status})`);
+  const data = (await response.json()) as { results: InvoiceBatchProduct[] };
+  return data.results[0];
+}
+
+// care_fe stores expiry as local midnight serialised in UTC, so the calendar day
+// must be read in local time (slicing the string is a day early east of UTC).
+function localInvoiceDate(value?: string): string {
+  const date = value ? new Date(value) : undefined;
+  if (!date || Number.isNaN(date.getTime())) return "";
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+export function prepareInvoiceItem(
+  row: InvoiceRow,
+  product: InvoiceProduct,
+  config: InvoiceMonetaryConfig = {},
+  defaults?: InvoiceBatchProduct,
+): ImportedInvoiceItem {
+  const quantity = integer(row.quantity, 0);
+  const freeQuantity = integer(row.freeQuantity || "0", 0);
+  const packSize = invoicePackSize(row.packSize || "1");
+  const packs =
+    quantity != null && freeQuantity != null
+      ? quantity + freeQuantity
+      : undefined;
+  const units =
+    packs != null && packSize != null ? packs * packSize : undefined;
+  const taxComponents = invoiceTaxComponents(row, config);
+  const mrp = invoiceDecimal(row.mrp);
+  const mrpCode = config.instance_informational_codes?.find(
+    (code) => code.code === "mrp",
+  );
+  const sellingPrice = invoiceDecimal(row.sellingPrice);
+  const hasTaxRate = [
+    row.cgstRate,
+    row.sgstRate,
+    row.igstRate,
+    row.gstRate,
+  ].some((rate) => invoiceDecimal(rate) != null);
+  const taxInclusive =
+    sellingPrice == null &&
+    mrp != null &&
+    !!mrpCode &&
+    packSize != null &&
+    hasTaxRate &&
+    !invoiceTaxNeedsReview(row, config);
+  const taxRate = taxComponents.reduce(
+    (total, component) => total.plus(component.factor ?? "0"),
+    new Decimal(0),
+  );
+  const unitPrice =
+    sellingPrice ??
+    (taxInclusive
+      ? new Decimal(mrp!)
+          .dividedBy(new Decimal(1).plus(taxRate.dividedBy(100)))
+          .dividedBy(packSize!)
+          .toFixed(6)
+      : undefined);
+  const item: ImportedInvoiceItem = {
+    product_knowledge: product,
+    supplied_item_quantity:
+      units != null && Number.isSafeInteger(units) && units > 0
+        ? String(units)
+        : "",
+    supplied_item_pack_quantity: packs,
+    supplied_item_pack_size: packSize ?? undefined,
+    batch_number: row.batch.trim(),
+    expiry_date: normalizeInvoiceExpiry(row.expiry),
+    unit_price: unitPrice,
+    total_purchase_price: invoiceDecimal(row.totalPurchasePrice),
+    // care_fe recomputes TPR from the product unless this flag marks it as user-supplied
+    is_total_purchase_price_edited:
+      invoiceDecimal(row.totalPurchasePrice) != null,
+    informational_components:
+      mrp != null && mrpCode
+        ? [
+            {
+              monetary_component_type: "informational",
+              code: mrpCode,
+              amount: mrp,
+            },
+          ]
+        : [],
+    tax_components: taxComponents,
+    discount_components: [],
+    _is_inward_stock: true,
+    is_manually_edited: true,
+    is_tax_inclusive: taxInclusive,
+    extensions:
+      config.supply_delivery_extension?.free_quantity && freeQuantity != null
+        ? { supply_delivery_extension: { free_quantity: freeQuantity } }
+        : {},
+  };
+  if (!defaults) return item;
+
+  const charge = defaults.charge_item_definition;
+  const components = charge?.price_components ?? [];
+  const defaultExpiry = localInvoiceDate(defaults.expiration_date);
+  const defaultBatch = defaults.batch?.lot_number ?? "";
+  const defaultPrice =
+    components.find((component) => component.monetary_component_type === "base")
+      ?.amount ?? undefined;
+  const defaultTaxes = components.filter(
+    (component) => component.monetary_component_type === "tax",
+  );
+  const defaultDiscounts = components.filter(
+    (component) => component.monetary_component_type === "discount",
+  );
+  const defaultInformation = components.filter(
+    (component) => component.monetary_component_type === "informational",
+  );
+  const hasExplicitTaxes = [
+    row.cgstRate,
+    row.sgstRate,
+    row.igstRate,
+    row.gstRate,
+  ].some((rate) => invoiceDecimal(rate) != null);
+
+  item.batch_number = item.batch_number || defaultBatch;
+  item.expiry_date = item.expiry_date || defaultExpiry;
+  item.unit_price = item.unit_price ?? defaultPrice;
+  item.tax_components =
+    hasExplicitTaxes && !invoiceTaxNeedsReview(row, config)
+      ? taxComponents
+      : defaultTaxes;
+  item.discount_components = defaultDiscounts;
+  item.informational_components = [...defaultInformation];
+  if (mrp != null && mrpCode) {
+    item.informational_components = [
+      ...defaultInformation.filter(
+        (component) => component.code?.code !== mrpCode.code,
+      ),
+      { monetary_component_type: "informational", code: mrpCode, amount: mrp },
+    ];
+  }
+  if (
+    item.total_purchase_price == null &&
+    defaults.purchase_price != null &&
+    packSize != null
+  ) {
+    item.total_purchase_price = new Decimal(defaults.purchase_price)
+      .times(packSize)
+      .toFixed(6);
+  }
+  item.supplied_item = defaults;
+  item.charge_item_definition = charge ? { slug: charge.slug } : undefined;
+  item.charge_item_category = charge?.category?.slug;
+  const sameAmount = (first?: string | null, second?: string | null) => {
+    if (first == null || second == null) return first == null && second == null;
+    return new Decimal(first).equals(second);
+  };
+  const samePrice = (first?: string | null, second?: string | null) => {
+    if (first == null || second == null) return sameAmount(first, second);
+    // Stored prices are rounded; compare at their precision, not the 6-decimal derived value.
+    const places = second.split(".")[1]?.length ?? 0;
+    return new Decimal(first).toDecimalPlaces(places).equals(second);
+  };
+  const sameComponents = (
+    first: InvoiceMonetaryComponent[],
+    second: InvoiceMonetaryComponent[],
+  ) =>
+    first.length === second.length &&
+    first.every((component) =>
+      second.some(
+        (other) =>
+          component.monetary_component_type === other.monetary_component_type &&
+          component.code?.code === other.code?.code &&
+          component.code?.system === other.code?.system &&
+          sameAmount(component.factor, other.factor) &&
+          sameAmount(component.amount, other.amount),
+      ),
+    );
+  // care_fe copies the product's existing price components on save unless the
+  // charge item is flagged as edited, which would drop imported tax/MRP values.
+  item.is_charge_item_edited =
+    !samePrice(item.unit_price, defaultPrice) ||
+    !sameComponents(item.tax_components, defaultTaxes) ||
+    !sameComponents(item.discount_components, defaultDiscounts) ||
+    !sameComponents(item.informational_components, defaultInformation);
+  item.is_manually_edited =
+    item.batch_number.toLowerCase() !== defaultBatch.toLowerCase() ||
+    item.expiry_date !== defaultExpiry ||
+    item.is_charge_item_edited;
+  return item;
+}
+
+export function isEmptyInvoiceTarget(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  const allowed = new Set([
+    "product_knowledge",
+    "supplied_inventory_item",
+    "supplied_item_quantity",
+    "supplied_item_pack_quantity",
+    "supplied_item_pack_size",
+    "supplied_item",
+    "supply_request",
+    "_is_inward_stock",
+    "is_tax_inclusive",
+    "extensions",
+    "batch_number",
+    "expiry_date",
+    "unit_price",
+    "is_manually_edited",
+  ]);
+  if (Object.keys(item).some((key) => !allowed.has(key))) return false;
+  const product = item.product_knowledge as
+    | { slug?: string; name?: string }
+    | undefined;
+  return (
+    !product?.slug &&
+    !product?.name &&
+    !item.supplied_item &&
+    !item.supply_request &&
+    !item.supplied_inventory_item &&
+    !item.batch_number &&
+    !item.expiry_date &&
+    !item.is_manually_edited &&
+    (item.supplied_item_quantity == null ||
+      ["", "1", "1.00"].includes(String(item.supplied_item_quantity))) &&
+    (item.supplied_item_pack_quantity == null ||
+      item.supplied_item_pack_quantity === 1) &&
+    (item.supplied_item_pack_size == null ||
+      item.supplied_item_pack_size === 1) &&
+    (item.unit_price == null ||
+      ["", "0", "0.00"].includes(String(item.unit_price))) &&
+    Object.keys((item.extensions as Record<string, unknown>) ?? {}).length === 0
+  );
+}
+
+function withoutPackCount(value: string): string {
+  return value
+    .replace(
+      /\(\s*\d+(?:\s*[xX]\s*\d+)*\s*(?:tablets?|tables|tabs?|capsules?|caps?|strips?|packs?|pieces?|pcs)\s*\)/gi,
+      " ",
+    )
+    .replace(
+      /\b\d+(?:\s*[xX]\s*\d+)*\s*(?:tablets?|tables|tabs?|capsules?|caps?|strips?|packs?|pieces?|pcs)\b/gi,
+      " ",
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function buildProductQueries(description: string): string[] {
+  const original = withoutPackCount(description);
+  const cleaned = original.replace(/(\d+(?:\.\d+)?)\s*gms?\b/gi, "$1 g");
+  const separated = cleaned.replace(/([a-z])(\d)/gi, "$1 $2");
+  const queries = new Set<string>([
+    original,
+    cleaned,
+    separated,
+    cleaned.replace(/[\s-]+/g, ""),
+  ]);
+  const spaced = separated.replace(
+    /(\d+(?:\.\d+)?)\s*(mg|mcg|g|iu|ml)\b/gi,
+    (_, amount: string, unit: string) => `${amount} ${unit.toLowerCase()}`,
+  );
+  queries.add(spaced);
+  queries.add(spaced.replace(/(\d+(?:\.\d+)?)\s+(mg|mcg|g|iu|ml)\b/gi, "$1$2"));
+  const bareNumber = separated.match(/\b(\d{2,4})\b/);
+  if (bareNumber && !/(mg|mcg|g|iu|ml)\b/i.test(separated)) {
+    const baseName = separated.replace(bareNumber[0], "").trim();
+    queries.add(`${baseName} ${bareNumber[1]} mg`);
+    queries.add(`${baseName} ${bareNumber[1]}mg`);
+  }
+  queries.add(
+    separated
+      .replace(/\b\d+(?:\.\d+)?\s*(?:mg|mcg|g|iu|ml)?\b/gi, "")
+      .replace(/\s+/g, " ")
+      .trim(),
+  );
+  return [...queries].filter((query) => query.length >= 2);
+}
+
+function normalized(value: string): string {
+  return withoutPackCount(value)
+    .toLowerCase()
+    .replace(/(\d+(?:\.\d+)?)\s*gms?\b/g, "$1g")
+    .replace(/(\d)\s+(mg|mcg|g|iu|ml)\b/g, "$1$2")
+    .replace(/(?<!\d)\.|\.(?!\d)/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function scoreInvoiceProduct(
+  product: InvoiceProduct,
+  description: string,
+  _hsnSac = "",
+): number {
+  const names = [
+    product.name,
+    ...(product.names?.map((name) => name.name) ?? []),
+    product.code?.display ?? "",
+  ]
+    .filter(Boolean)
+    .map(normalized);
+  const query = normalized(description);
+  const strengths = query.match(/\d+(?:\.\d+)?(?:kg|mg|mcg|g|iu|ml)?/g) ?? [];
+  const queries = buildProductQueries(description).map(normalized);
+  const queryTokens =
+    query.match(/[a-z]+|\d+(?:\.\d+)?(?:kg|mg|mcg|g|iu|ml)?/g) ?? [];
+  const genericWords = new Set([
+    "inj",
+    "injection",
+    "gel",
+    "tab",
+    "tablet",
+    "tablets",
+    "cap",
+    "capsule",
+    "capsules",
+    "syrup",
+    "vial",
+    "solution",
+    "cream",
+    "ointment",
+    "suspension",
+    "drops",
+    "ml",
+    "kg",
+    "mg",
+    "mcg",
+    "g",
+    "iu",
+    "containing",
+    "product",
+  ]);
+  let bestDoseAware = 0;
+  let bestGeneric = 0;
+  for (const name of names) {
+    const nameHasStrength = /\d/.test(name);
+    if (
+      strengths.length &&
+      nameHasStrength &&
+      !strengths.every((strength) => {
+        const amount = strength.match(/^\d+(?:\.\d+)?/)![0];
+        const unit = strength.slice(amount.length);
+        const unitPattern = unit ? `(?:${unit})?` : "(?:kg|mg|mcg|g|iu|ml)?";
+        const pattern = new RegExp(
+          `(?:^|[^\\d.])${amount.replace(/\./g, "\\.")}${unitPattern}(?![\\d.a-z])`,
+        );
+        return pattern.test(name);
+      })
+    )
+      continue;
+    for (const variant of queries) {
+      const compactName = name.replace(/[\s-]+/g, "");
+      const compactQuery = variant.replace(/[\s-]+/g, "");
+      let score =
+        compactName === compactQuery
+          ? 100
+          : compactName.startsWith(compactQuery) ||
+              compactQuery.startsWith(compactName)
+            ? 85
+            : compactName.includes(compactQuery) ||
+                compactQuery.includes(compactName)
+              ? 70
+              : 0;
+      if (strengths.length && !nameHasStrength) score = Math.min(score, 70);
+      if (/\d/.test(variant)) {
+        bestDoseAware = Math.max(bestDoseAware, score);
+      } else {
+        bestGeneric = Math.max(bestGeneric, score);
+      }
+    }
+    const nameTokens: string[] =
+      name.match(/[a-z]+|\d+(?:\.\d+)?(?:kg|mg|mcg|g|iu|ml)?/g) ?? [];
+    const sharedTokens = queryTokens.filter((token) =>
+      nameTokens.includes(token),
+    );
+    if (
+      sharedTokens.some(
+        (token) => /^[a-z]/.test(token) && !genericWords.has(token),
+      )
+    ) {
+      bestGeneric = Math.max(
+        bestGeneric,
+        Math.min(
+          70,
+          Math.round(
+            (100 * sharedTokens.length) /
+              Math.max(queryTokens.length, nameTokens.length),
+          ),
+        ),
+      );
+    }
+  }
+  const best = bestDoseAware > 0 ? bestDoseAware : bestGeneric;
+  return Math.max(
+    0,
+    names.some((name) => name.includes("containing product"))
+      ? best - 25
+      : best,
+  );
+}
+
+export function getInvoiceProductMatches(
+  candidates: InvoiceProduct[],
+  description: string,
+  hsnSac = "",
+): InvoiceProduct[] {
+  return [
+    ...new Map(candidates.map((product) => [product.slug, product])).values(),
+  ]
+    .map((product) => ({
+      product,
+      score: scoreInvoiceProduct(product, description, hsnSac),
+    }))
+    .filter(({ score }) => score >= 20)
+    .sort((first, second) => second.score - first.score)
+    .map(({ product }) => product);
+}
+
+export function matchInvoiceProduct(
+  candidates: InvoiceProduct[],
+  description: string,
+): InvoiceProduct | undefined {
+  const query = normalized(description).replace(/[\s-]+/g, "");
+  if (!query) return undefined;
+  const matches = getInvoiceProductMatches(candidates, description).filter(
+    (product) =>
+      [
+        product.name,
+        ...(product.names?.map((name) => name.name) ?? []),
+        product.code?.display ?? "",
+      ].some((name) => normalized(name).replace(/[\s-]+/g, "") === query),
+  );
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+export async function searchInvoiceProducts(
+  description: string,
+  facilityId: string,
+  hsnSac = "",
+): Promise<InvoiceProduct[]> {
+  const products = new Map<string, InvoiceProduct>();
+  const identifier = hsnSac.replace(/\D/g, "");
+  if (identifier) {
+    try {
+      const url = new URL("/api/v1/product_knowledge/", window.CARE_API_URL);
+      url.search = new URLSearchParams({
+        facility: facilityId,
+        include_instance: "true",
+        status: "active",
+        alternate_identifier: identifier,
+        limit: "20",
+        offset: "0",
+      }).toString();
+      const response = await fetch(url, { headers: getHeaders() });
+      if (response.ok) {
+        const data = (await response.json()) as { results: InvoiceProduct[] };
+        for (const product of data.results) products.set(product.slug, product);
+      }
+    } catch {
+      // Keep name search available if identifier lookup fails.
+    }
+  }
+  for (const query of buildProductQueries(description)) {
+    const url = new URL("/api/v1/product_knowledge/", window.CARE_API_URL);
+    url.search = new URLSearchParams({
+      facility: facilityId,
+      include_instance: "true",
+      status: "active",
+      name: query,
+      limit: "20",
+      offset: "0",
+    }).toString();
+    const response = await fetch(url, { headers: getHeaders() });
+    if (!response.ok)
+      throw new Error(`Product search failed (${response.status})`);
+    const data = (await response.json()) as { results: InvoiceProduct[] };
+    for (const product of data.results) products.set(product.slug, product);
+  }
+  return [...products.values()].sort(
+    (first, second) =>
+      scoreInvoiceProduct(second, description) -
+      scoreInvoiceProduct(first, description),
+  );
+}
+
+export async function searchInvoiceProductCatalog(
+  query: string,
+  facilityId: string,
+): Promise<InvoiceProduct[]> {
+  const trimmedQuery = query.trim();
+  if (!trimmedQuery) return [];
+
+  const filters: ("name" | "alternate_names" | "alternate_identifier")[] = [
+    "name",
+    "alternate_names",
+  ];
+  const identifier = trimmedQuery.replace(/\D/g, "");
+  if (/^[\d\s-]+$/.test(trimmedQuery) && identifier.length >= 2) {
+    filters.push("alternate_identifier");
+  }
+
+  const resultSets = await Promise.all(
+    filters.map(async (filter) => {
+      const url = new URL("/api/v1/product_knowledge/", window.CARE_API_URL);
+      url.search = new URLSearchParams({
+        facility: facilityId,
+        include_instance: "true",
+        status: "active",
+        [filter]: filter === "alternate_identifier" ? identifier : trimmedQuery,
+        limit: "20",
+        offset: "0",
+      }).toString();
+      const response = await fetch(url, { headers: getHeaders() });
+      if (!response.ok)
+        throw new Error(`Product search failed (${response.status})`);
+      const data = (await response.json()) as { results: InvoiceProduct[] };
+      return data.results;
+    }),
+  );
+
+  return [
+    ...new Map(
+      resultSets.flat().map((product) => [product.slug, product]),
+    ).values(),
+  ];
+}

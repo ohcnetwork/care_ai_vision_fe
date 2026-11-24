@@ -1,7 +1,6 @@
-import { useAtomValue } from "jotai";
-
-import { authUserAtom } from "@/state/user-atom";
 import { UserBase } from "@/lib/types/common";
+import { authUserAtom } from "@/state/user-atom";
+import { useAtomValue } from "jotai";
 
 const FALLBACK_USER: UserBase = {
   id: "anonymous",
